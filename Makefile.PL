@@ -5,4 +5,5 @@ WriteMakefile(
     'NAME'              => 'Data::Sync',
     'VERSION_FROM'      => 'lib/Data/Sync.pm', # finds $VERSION
 	'MAN3PODS'	=> { },
+	'PREREQ_PM'	=> {'Data::Dump::Streamer'=>1.14}
 );

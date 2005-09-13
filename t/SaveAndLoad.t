@@ -5,10 +5,10 @@ use Data::Sync;
 
 BEGIN
 {
-	plan tests=>5
+	plan tests=>7
 }
 
-
+if (-e "config.dds"){unlink("config.dds")}
 my $synchandle = Data::Sync->new();
 
 # test internal transformation methods of Data::Sync
@@ -35,7 +35,11 @@ $synchandle->transforms(name=>"stripspaces",
 			longaddress=>"stripnewlines",
 			"description"=>"");
 
-my $result = $synchandle->runTransform(\@AoH);
+$synchandle->save("config.dds");
+my $sync2 = Data::Sync->new(configfile=>"config.dds");
+
+
+my $result = $sync2->runTransform(\@AoH);
 
 		
 # check names
@@ -71,5 +75,20 @@ ok($nlok);
 #check for null transform
 my $nullok=1;
 if ($result->[0]->{'description'} ne "Test string"){$nullok--}
-ok($nullok)
+ok($nullok);
 
+# check for loading non-existent file
+my $nonok=1;
+if ($synchandle->load("fakefile.dds")){$nonok--};
+if ($synchandle->error ne "Unable to open fakefile.dds for reading because No such file or directory"){$nonok--}
+ok($nonok);
+
+# check for loading dud file
+my $dudok=1;
+my $dudfile;
+open ($dudfile,">","dudfile.dds") or die "Can't open dummy file for writing because $!";
+print $dudfile "#DUMMY\n";
+close $dudfile;
+if ($synchandle->load("dudfile.dds")){$dudok--}
+if ($synchandle->error ne "Unsuccessful load from dudfile.dds"){$dudok--}
+ok($dudok);

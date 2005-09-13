@@ -1,8 +1,1 @@
-changelog detection and persistent searching
-
-example coderefs for transformations
-	multi value to single value attribs
-	data format alterations
-
-Standalone code to read a config file and perform the sync
-
+See POD

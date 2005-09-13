@@ -12,6 +12,8 @@
 #
 # 0.01	CColbourn		New module
 #
+# 0.02	CColbourn		Enhancements - see POD CHANGES
+#
 #####################################################################
 # Notes
 # =====
@@ -20,38 +22,50 @@
 
 use strict;
 use warnings;
+use Data::Dump::Streamer qw(:undump);
 
 package Data::Sync;
 use vars qw($VERSION);
-$VERSION="0.01";
+$VERSION="0.02";
 
 #####################################################################
 # New - constructor of datasync object
 #
-# takes parameters. Currently only "log" is implemented
+# takes parameters. 
 # returns blessed object
 #
 #####################################################################
 sub new
 {
 	my $self = shift;
-	my %syncobject;
+	my %synchash;
 	my %params = @_;
 
+	# make the object first!
+	my $syncobject = bless \%synchash,$self;
 
 	# define logging. If logging not set, use a coderef of return
 	if ($params{'log'})
 	{
-		$syncobject{'log'} = \&log;
-		$syncobject{'loghandle'} = $params{'log'};
+		$syncobject->{'log'} = \&log;
+		$syncobject->{'loghandle'} = $params{'log'};
 	}
 	else
 	{
-		$syncobject{'log'} = sub{return}
+		$syncobject->{'log'} = sub{return}
 	}
-
-
-	return bless \%syncobject,$self;
+	if ($params{'configfile'})
+	{
+		my $return = $syncobject->load($params{'configfile'});
+		if (!$return)
+		{
+			$self->{'log'}->($self->{'loghandle'},"ERROR: Not a readable config file ".$params{'configfile'});
+			$self->{'lasterror'} = "Not a readable config file ".$params{'configfile'};
+			return
+		}
+	}
+	# return the object
+	return $syncobject; 
 }
 
 #####################################################################
@@ -68,8 +82,20 @@ sub source
 	my $handle = shift;
 	my $criteriaref = shift;
 
-	$self->{'readcriteria'} = $criteriaref;
+	# do this regardless
 	$self->{'readhandle'}=$handle;
+
+	if (!$criteriaref)
+	{
+		# this /should/ mean the config is coming from a file
+		# so return if the configs already been loaded (and
+		# if not, it won't hurt anything to continue)
+		if ($self->{'readcriteria'})
+		{
+			return 1;
+		}
+	}
+	$self->{'readcriteria'} = $criteriaref;
 
 	# Create coderef for LDAP
 	if ($handle =~/LDAP/)
@@ -99,12 +125,14 @@ sub source
 			sub
 			{
 				my $self = shift;
+
 				my $stm = $self->{'readhandle'}->prepare($self->{'readcriteria'}->{'select'}) or return;
 				my $result = $stm->execute;
 				if ($result eq "0E0"){return $stm}
 				else
 				{
 					$self->{'log'}->($self->{'loghandle'},"ERROR: Could not read from database");
+					$self->{'lasterror'}="ERROR: Could not read from database";
 					return undef;
 				}
 			}
@@ -126,14 +154,24 @@ sub target
 	my $self = shift;
 	my $handle = shift;
 
+	$self->{'writehandle'} = $handle;
 	
 	my $criteriaref = shift;
-	if ($criteriaref)
+	if (!$criteriaref)
+	{
+		# this /may/ mean the config is coming from a file
+		# so return if the configs already been loaded (and
+		# if not, it may be an ldap target so continue;
+		if ($self->{'readcriteria'} && $handle!~/LDAP/)
+		{
+			return 1;
+		}
+	}
+	else 
 	{
 		$self->{'writecriteria'} = $criteriaref;
 	}
 
-	$self->{'writehandle'} = $handle;
 	
 	# create coderef to write to LDAP
 	if ($handle =~/LDAP/)
@@ -167,7 +205,8 @@ sub target
 					if ($result->code)
 					{
 						$self->{'log'}->($self->{'loghandle'},"ERROR: ".$result->error);
-						return $result->error
+						$self->{'lasterror'}="ERROR: Add failed :".$result->error;
+						return undef;
 					}
 				}
 		}
@@ -222,7 +261,8 @@ sub target
 					}
 					if ($result eq "0E0")
 					{
-						$self->{'log'}->($self->{'loghandle'},"ERROR: Add failed");
+						$self->{'log'}->($self->{'loghandle'},"ERROR: Add failed because ".$self->{'writehandle'}->errstr);
+						$self->{'lasterror'}="ERROR: Add failed because ".$self->{'writehandle'}->errstr;
 					}
 					
 				}
@@ -567,7 +607,115 @@ sub log
 }
 
 
-1;
+
+########################################################################
+# save - saves config to a DDS file
+#
+# takes filename
+# returns success or fail
+#
+########################################################################
+sub save
+{
+	my $self = shift;
+	my $filename = shift;
+	if (!$filename)
+	{
+		$self->{'log'}->($self->{'loghandle'},"ERROR: No filename supplied to save");
+		$self->{'lasterror'}="ERROR: No filename supplied to save";
+	}
+
+	my $fh;
+	open ($fh,">",$filename) or do
+				{
+					$self->{'lasterror'} = "Unable to open $filename for writing because $!";
+					return;
+				};
+
+
+	my $dds = Data::Dump::Streamer->new;
+
+	# clone the object and remove non serialisable or unwanted keys
+	my $clone = \%$self;
+	delete $clone->{'writehandle'};
+	delete $clone->{'readhandle'};
+	delete $clone->{'loghandle'};
+	delete $clone->{'log'};
+
+	print $fh $dds->Dump($clone)->Out();
+
+	close $fh;
+
+	return 1;
+}
+
+#######################################################################
+# load - read back a config file
+#
+# takes filename
+# returns 1 on success, 0 on fail
+#
+#######################################################################
+sub load
+{
+	my $self = shift;
+	my $filename = shift;
+
+	if (!$filename)
+	{
+		$self->{'log'}->($self->{'loghandle'},"ERROR: No filename supplied to save");
+		$self->{'lasterror'}="ERROR: No filename supplied to save";
+	}
+	
+	my $Data_Sync1; # this is what Data::Dump::Streamer calls the object
+	my $fh;
+	open ($fh,"<",$filename) or do
+				{
+					$self->{'lasterror'} = "Unable to open $filename for reading because $!";
+					return;
+				};
+	my $evalstring;
+	while (<$fh>)
+	{
+		$evalstring .=$_;
+	}
+
+	eval $evalstring;
+	my $successfulload;
+	for my $attrib (keys %$Data_Sync1)
+	{
+		$self->{$attrib} = $Data_Sync1->{$attrib};
+		$successfulload++;
+	}
+
+	if (!$successfulload)
+	{
+		if ($self->{'log'})
+		{
+			$self->{'log'}->($self->{'loghandle'},"ERROR: Unsuccessful load from $filename") ;
+		}
+		$self->{'lasterror'}="Unsuccessful load from $filename";
+		return
+	}
+
+	return 1;
+
+}
+
+########################################################################
+# error - returns last error
+#
+# takes no parameter
+# returns error
+#
+########################################################################
+sub error
+{
+	my $self = shift;
+
+	return $self->{'lasterror'}
+}
+
 
 ########################################################################
 ########################################################################
@@ -585,7 +733,7 @@ sub stripspaces
 sub stripnewlines
 {
 	my $var = shift;
-	$var=~s/\n//g;
+	$var=~s/\n/ /g;
 	# (just in case)
 	$var=~s/\r//g;
 	return $var;
@@ -596,6 +744,7 @@ sub stripnewlines
 
 
 
+1;
 
 #########################################################################
 #########################################################################
@@ -613,7 +762,7 @@ Data::Sync - A simple metadirectory/datapump module
 
  use Data::Sync;
 
- my $sync = Data::Sync->new(log=>"STDOUT");
+ my $sync = Data::Sync->new(log=>"STDOUT",[configfile=>"config.dds"]);
 
  $sync->source($dbhandle,{select=>"select * from testtable"});
 
@@ -640,13 +789,17 @@ Data::Sync - A simple metadirectory/datapump module
 					$address=~s/\n/\<BR\>/g;
 					return $address});
 
+ $sync->save("filename");
+
+ $sync->load("filename");
+
  $sync->run();
 
 =head1 DESCRIPTION
 
 Data::Sync is a simple metadirectory/data pump module. It automates a number of the common tasks required when syncing databases & ldap directories.
 
-In order to use Data::Sync, you must define a source and a target. The first parameter to the source & target methods is a B<bound> database/Net::LDAP handle.
+In order to use Data::Sync, you must define a source and a target. The first parameter to the source & target methods is a bound DBI/Net::LDAP handle.
 
 Having defined your datasources, define how attributes map between them with mappings. If an attribute returned from the data source has no entry in the mapping table, it will be assumed that the name is the same in both databases.
 
@@ -662,8 +815,10 @@ B<WARNING!> There is no implied or real warranty associated with the use of this
 
  my $sync = Data::Sync->new(log=>"STDOUT");
  my $sync = Data::Sync->new(log=>$fh);
+ my $sync = Data::Sync->new(configfile=>"config.dds");
 
-The constructor returns a Data::Sync object. To use logging, pass the string STDOUT as the log parameter to print logging to STDOUT, or a I<lexical> filehandle.
+The constructor returns a Data::Sync object. To use logging, pass the string STDOUT as the log parameter to print logging to STDOUT, or a lexical filehandle.
+Optionally, you can specify a config file, although you'll still need pass the db/ldap handles (only) to source & target.
 
 =head1 METHODS
 
@@ -677,7 +832,11 @@ The constructor returns a Data::Sync object. To use logging, pass the string STD
 				scope=>"sub",
 				base=>"ou=testcontainer,dc=test,dc=org"});
 
-Requires a valid, bound (i.e. logged in) Net::LDAP or DBI handle, and a hash of parameters for the data source. LDAP parameters are:
+ or
+
+ $sync->source($dbhandle); # only if loading config file
+
+Requires a valid, bound (i.e. logged in) Net::LDAP or DBI handle, and a hash of parameters for the data source (assuming you aren't loading the config from a file). LDAP parameters are:
  filter
  scope
  base
@@ -698,12 +857,16 @@ DBI parameters are:
 
  $sync->target($ldaphandle);
 
-Requires a valid, bound (i.e. logged in) DBI or Net::LDAP handle, and a hash of parameters. No parameters are required for LDAP data targets, but a dn must have been either read from the data source or constructed using buildattributes. Valid DBI parameters are
+ or
+
+ $sync->target($db); # only if loading config from a file
+
+Requires a valid, bound (i.e. logged in) DBI or Net::LDAP handle, and a hash of parameters (unless you are loading the config from a file). No parameters are required for LDAP data targets, but a dn must have been either read from the data source or constructed using buildattributes. Valid DBI parameters are
 
  table - the table you wish to write to on the data target
  index - the attribute you wish to use as an index
 
-Note: if you are writing from DB to LDAP, you I<must> construct all mandatory attributes using buildattributes, or additions will fail.
+Note: if you are writing from DB to LDAP, you must construct all mandatory attributes using buildattributes, or additions will fail.
 
 =head2 mappings
 
@@ -733,26 +896,67 @@ Converts each field in the source data using the parameters passed. Each paramet
 
 Note: If passing a regex in a string, make sure you use single quotes. Double quotes will invite perl to interpolate the contents, with unexpected results.
 
+=head2 save
+
+ $sync->save("filename");
+
+Saves the config to a Data::Dump::Streamer file. Returns 1 on success.
+
+=head2 load
+
+ $sync->load("filename");
+
+Loads the config from a Data::Dump::Streamer file previously created with save. You still need to define the source and target db/ldap handles with source & target, but if you've loaded the config from a file you can omit the hash of options.
+
 =head2 run
 
- $sync->run();
+ $sync->run() or die $sync->error."\n";
 
 No parameters. Reads the data from the source, converts and renames it as defined in mappings, buildattributes and transforms, and writes it to the target.
 
+=head2 error
+
+ print $sync->error;
+
+Returns the last error encountered by the module. This is set e.g. when a file fails to load correctly, when a sql error is encountered etc. When this occurs, the return value from the called function will be zero, and error() should be called to identify the problem.
+
 =head1 PREREQS
 
+Data::Dump::Streamer
+
 If you are using LDAP datasources, you will need Net::LDAP.
+
 If you are using DBI datasources, you will need DBI and the appropriate DBD drivers.
 
 =head1 VERSION
 
-0.01
+0.02
 
 =head1 TODO
 
+Transform to convert multivalued attribs to single valued (choice: use value[index], join with delimiter)
+		
+Example using AnyData & XML
+
+Deletion support (somehow, anyhow....)
+
+Delta support?
+
+Multiple sources in a single job?
+
+Multiple targets in a single job?
+
+UI to include non OO
+
+Readprogress/writeprogress/transform progress coderefs to report progress (e.g. output a .)
 
 =head1 CHANGES
 
+Implemented load & save functions.
+
+Implemented error function
+
+Modified stripnewlines to replace with whitespace.
 
 =head1 COPYRIGHT
 
