@@ -6,6 +6,15 @@ At the moment this is ALPHA software - use it with caution! I'm keen
 see the functionality develop further, and welcome feedback at
 charlesc@g0n.net
 
+INSTALLATION
+============
+
+install with cpan, or do:
+
+perl Makefile.PL
+make test
+make install
+
 TESTING
 =======
 

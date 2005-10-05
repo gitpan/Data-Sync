@@ -9,9 +9,11 @@ use Data::Sync;
 my $logfile;
 open ($logfile,">","logfile.txt");
 
-my $synchandle = Data::Sync->new(log=>$logfile);
+my $synchandle = Data::Sync->new(log=>$logfile,
+				progressoutputs=>1);
 
-$synchandle->source($db,{'select'=>"SELECT * from source"});
+$synchandle->source($db,{'select'=>"SELECT * from source",
+			});
 $synchandle->target($db,{'table'=>'target',
 				'index'=>'NAME'});
 
@@ -20,6 +22,7 @@ $synchandle->transforms(TELEPHONE=>'s/o/e/');
 
 print $synchandle->run;
 
+print $synchandle->error."\n";
 
 # display the contents of testdb
 my $sth = $db->prepare("select * from target");

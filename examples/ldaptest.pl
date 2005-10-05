@@ -8,7 +8,7 @@ my $db = DBI->connect("DBI:SQLite:dbname=testdb","","");
 my $ldap = Net::LDAP->new("127.0.0.1");
 
 my $result = $ldap->bind(dn=>"cn=Manager,dc=g0n,dc=net",
-			password=>"XXXXX");
+			password=>"XXXX");
 if ($result->code){die $result->error}
 
 
@@ -21,7 +21,8 @@ my $synchandle = Data::Sync->new(log=>$filehandle);
 $synchandle->source($ldap,{filter=>"(sn=*)",
 				base=>'ou=testcontainer,dc=g0n,dc=net',
 				scope=>'sub',
-				attrs=>['cn','postalAddress','telephoneNumber']});
+				attrs=>['cn','postalAddress','telephoneNumber'],
+				batchsize=>5});
 			
 $synchandle->target($db,{'table'=>'target',
 				'index'=>'NAME'});

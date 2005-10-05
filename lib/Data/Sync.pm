@@ -25,8 +25,7 @@ use warnings;
 use Data::Dump::Streamer qw(:undump);
 
 package Data::Sync;
-use vars qw($VERSION);
-$VERSION="0.02";
+our $VERSION="0.03";
 
 #####################################################################
 # New - constructor of datasync object
@@ -64,8 +63,24 @@ sub new
 			return
 		}
 	}
+	
+	# put something to stdout for progress reporting. Convenience for debugging. Deliberately undocumented
+	if ($params{'progressoutputs'})
+	{
+		if (!$params{'readprogress'}){$syncobject->{'readprogress'} = sub{print "R"}}
+		if (!$params{'transformprogress'}){$syncobject->{'transformprogress'} = sub {print "T"}}
+		if (!$params{'writeprogress'}){$syncobject->{'writeprogress'} = sub {print "W"}}
+	}
+	else
+	{
+		if(!$params{'readprogress'}){$syncobject->{'readprogress'} = sub {return}};
+		if(!$params{'transformprogress'}){$syncobject->{'transformprogress'} = sub {return}};
+		if(!$params{'writeprogress'}){$syncobject->{'writeprogress'} = sub {return}};
+	}
+	
 	# return the object
 	return $syncobject; 
+	
 }
 
 #####################################################################
@@ -96,50 +111,74 @@ sub source
 		}
 	}
 	$self->{'readcriteria'} = $criteriaref;
+	if (!$self->{'readcriteria'}->{'batchsize'})
+	{
+		$self->{'readcriteria'}->{'batchsize'}=0;
+	}
 
 	# Create coderef for LDAP
 	if ($handle =~/LDAP/)
 	{
-		$self->{'read'} = 
-			sub
-			{
-				my $self = shift;
-				my $result = $self->{'readhandle'}->search
-					(filter=>$self->{'readcriteria'}->{'filter'},
-					base=>$self->{'readcriteria'}->{'base'},
-					scope=>$self->{'readcriteria'}->{'scope'},
-					attrs=>$self->{'readcriteria'}->{'attrs'});
-				if ($result->code)
-				{
-					$self->{'log'}->($self->{'loghandle'},"ERROR:".$result->error);
-					return $result->error
-				}
-				else {return $result}
-			}
+		$self->{'read'} = \&readldap; 
 	}
 
 	# everything else will be DBI/SQL
 	else
 	{
-		$self->{'read'} =
-			sub
-			{
-				my $self = shift;
-
-				my $stm = $self->{'readhandle'}->prepare($self->{'readcriteria'}->{'select'}) or return;
-				my $result = $stm->execute;
-				if ($result eq "0E0"){return $stm}
-				else
-				{
-					$self->{'log'}->($self->{'loghandle'},"ERROR: Could not read from database");
-					$self->{'lasterror'}="ERROR: Could not read from database";
-					return undef;
-				}
-			}
+		$self->{'read'} =\&readdbi
 	}
 
 	1;
 }
+
+#########################################################
+# readldap - read from an ldap datasource
+#
+# takes object as param
+#
+# returns result handle
+#########################################################
+sub readldap
+{
+	
+	my $self = shift;	
+	my $result = $self->{'readhandle'}->search
+		(filter=>$self->{'readcriteria'}->{'filter'},
+		base=>$self->{'readcriteria'}->{'base'},
+		scope=>$self->{'readcriteria'}->{'scope'},
+		attrs=>$self->{'readcriteria'}->{'attrs'});
+	if ($result->code)
+	{
+		$self->{'log'}->($self->{'loghandle'},"ERROR:".$result->error);
+		return $result->error
+	}
+	else {return $result}
+}
+
+#########################################################
+# readdbi - read from a dbi datasource
+#
+# takes object as param
+#
+# returns result handle
+#########################################################
+sub readdbi
+{
+	my $self = shift;
+	
+	my $stm = $self->{'readhandle'}->prepare($self->{'readcriteria'}->{'select'}) or return;
+	my $result = $stm->execute;
+	if ($result eq "0E0"){return $stm}
+	else
+	{
+		$self->{'log'}->($self->{'loghandle'},"ERROR: Could not read from database");
+		$self->{'lasterror'}="ERROR: Could not read from database";
+		return undef;
+	}
+}
+
+
+
 
 #########################################################
 # target - define the data target
@@ -176,101 +215,122 @@ sub target
 	# create coderef to write to LDAP
 	if ($handle =~/LDAP/)
 	{
-		$self->{'write'} =
-			sub
-			{
-				my $self = shift;
-				my $writedata = shift;
-				foreach my $line (@$writedata)
-				{
-					my $dn = $line->{'dn'};
-					delete $line->{'dn'};
-					$self->{'log'}->($self->{'loghandle'},"Modifying $dn, values ".join ",",values %$line);
-					my $result =
-						$self->{'writehandle'}->modify
-							(
-								dn=>$dn,
-								replace=>[%$line]
-							);
-					if ($result->code)
-					{
-					$self->{'log'}->($self->{'loghandle'},"Modify failed, adding $dn, values ".join ",",values %$line);
-						$result =
-							$self->{'writehandle'}->add
-								(
-									dn=>$dn,
-									attrs=>[%$line]
-								)
-					}
-					if ($result->code)
-					{
-						$self->{'log'}->($self->{'loghandle'},"ERROR: ".$result->error);
-						$self->{'lasterror'}="ERROR: Add failed :".$result->error;
-						return undef;
-					}
-				}
-		}
+		$self->{'write'} = \&writeldap;
 	}
 
 	# write coderef for DBI
 	if ($handle =~/DBI/)
 	{
-		$self->{'write'} =
-			sub
-			{
-				my $self = shift;
-				my $writedata = shift;
-
-				for my $line (@$writedata)
-				{
-					my $update = "update ".$self->{'writecriteria'}->{'table'}. " set ";
-						
-
-					# DANGER! this initially used keys %$line, but order can't be guaranteed.
-
-					my (@keys,@values);
-
-					for (keys %$line)
-					{
-						push @keys,$_;
-						push @values,$$line{$_}
-					}
-
-					$update.=join "=?,",@keys;
-
-					$update .="=? where ";
-					$update .= $self->{'writecriteria'}->{'index'};
-					$update .="=?";
-						$self->{'log'}->($self->{'loghandle'},"Updating $update, ".join ",",@values);
-
-					my $stm = $self->{'writehandle'}->prepare($update);
-					my $result = $stm->execute(@values,$line->{$self->{'writecriteria'}->{'index'}});
-					if ($result eq "0E0")
-					{
-
-
-						my $insert = "insert into ".$self->{'writecriteria'}->{'table'}." (";
-						$insert .= join ",",@keys;
-						$insert .=") VALUES (";
-						$insert .=join ",",map { "?" } (0..scalar @values-1);
-						$insert .=")";
-
-						$self->{'log'}->($self->{'loghandle'},"Update failed, adding $insert, ".join ",",@values);
-						$stm = $self->{'writehandle'}->prepare($insert);
-						$result = $stm->execute(@values);
-					}
-					if ($result eq "0E0")
-					{
-						$self->{'log'}->($self->{'loghandle'},"ERROR: Add failed because ".$self->{'writehandle'}->errstr);
-						$self->{'lasterror'}="ERROR: Add failed because ".$self->{'writehandle'}->errstr;
-					}
-					
-				}
-
-			}
-		}
+		$self->{'write'} = \&writedbi;
+	}
 	1;
 }
+
+########################################################
+# writedbi
+#
+# takes object as param
+#
+# return t/f
+########################################################
+sub writedbi	
+{		
+	my $self = shift;
+	my $writedata = shift;
+
+	for my $line (@$writedata)
+	{
+		my $update = "update ".$self->{'writecriteria'}->{'table'}. " set ";
+
+		my @keys = keys %$line;
+		my @values = map $$_,values %$line;
+
+		$update.=join "=?,",@keys;
+
+		$update .="=? where ";
+		$update .= $self->{'writecriteria'}->{'index'};
+		$update .="=?";
+		$self->{'log'}->($self->{'loghandle'},"Updating $update, ".join ",",@values);
+
+		my $stm = $self->{'writehandle'}->prepare($update);
+		my $result = $stm->execute(@values,$line->{$self->{'writecriteria'}->{'index'}});
+		if ($result eq "0E0")
+		{
+			my $insert = "insert into ".$self->{'writecriteria'}->{'table'}." (";
+			$insert .= join ",",@keys;
+			$insert .=") VALUES (";
+			$insert .=join ",",map { "?" } (0..scalar @values-1);
+			$insert .=")";
+			$self->{'log'}->($self->{'loghandle'},"Update failed, adding $insert, ".join ",",@values);
+			$stm = $self->{'writehandle'}->prepare($insert);
+			$result = $stm->execute(@values);
+		}
+		if ($result eq "0E0")
+		{
+			$self->{'log'}->($self->{'loghandle'},"ERROR: Add failed because ".$self->{'writehandle'}->errstr);
+			$self->{'lasterror'}="ERROR: Add failed because ".$self->{'writehandle'}->errstr;
+		}
+		$self->{'writeprogress'}->($line->{$self->{'writecriteria'}->{'index'}});		
+	}
+
+}
+
+
+
+
+########################################################
+# writeldap - write to an ldap server
+#
+# takes object as param
+#
+# returns t/f
+#########################################################
+sub writeldap
+{
+	my $self = shift;
+	my $writedata = shift;
+
+	foreach my $line (@$writedata)
+	{
+		my $dn = $line->{'dn'};
+
+		delete $line->{'dn'};
+		$self->{'log'}->($self->{'loghandle'},"Modifying $dn, values ".join ",",values %$line);
+		
+		my $result =
+			$self->{'writehandle'}->modify
+			(
+				dn=>$dn,
+				replace=>[%$line]
+			);
+		
+		
+		if ($result->code)
+		{
+			$self->{'log'}->($self->{'loghandle'},"Modify failed, adding $dn, values ".join ",",values %$line);
+			$result =
+				$self->{'writehandle'}->add
+				(
+					dn=>$dn,
+					attrs=>[%$line]
+				);
+		
+		}
+		
+		if ($result->code)
+		{
+			$self->{'log'}->($self->{'loghandle'},"ERROR: ".$result->error);
+			$self->{'lasterror'}="ERROR: Add failed :".$result->error;
+			
+			return undef;
+		}
+		$self->{'writeprogress'}->("W");
+	}
+	return 1;
+}
+
+
+
 
 ########################################################
 # sourceToAoH
@@ -289,44 +349,99 @@ sub sourceToAoH
 	my $handle = shift;
 
 	my @records;
-
+	my $counter=1;
+	
 	# Convert LDAP
 	if ($handle=~/LDAP/)
 	{
-		for my $entry ($handle->entries)
+		if ($self->{'readcriteria'}->{'batchsize'} >0)
 		{
-			my %record;
-			for my $attrib ($entry->attributes)
+			while ($counter<= $self->{'readcriteria'}->{'batchsize'})
 			{
-				$record{$attrib} = $entry->get_value($attrib);
+				my $entry=$handle->shift_entry;
+				if (!$entry){last}
+				my %record;
+				for my $attrib ($entry->attributes)
+				{
+					$record{$attrib} = $entry->get_value($attrib);
+				}
+				$self->{'log'}->($self->{'loghandle'},"Read ".$entry->dn." from the directory");
+				push @records,\%record;
+				$counter++;
+				$self->{'readprogress'}->($entry->dn);
 			}
-			$self->{'log'}->($self->{'loghandle'},"Read ".$entry->dn." from the directory");
-			push @records,\%record
 		}
+		else
+		{
+			while (my $entry=$handle->shift_entry)
+			{
+				my %record;
+				for my $attrib ($entry->attributes)
+				{
+					$record{$attrib} = $entry->get_value($attrib);
+				}
+				$self->{'log'}->($self->{'loghandle'},"Read ".$entry->dn." from the directory");
+				push @records,\%record;
+				$counter++;
+				$self->{'readprogress'}->($entry->dn);
+			}
+		}	
+		
+		
+		
 	}
 
-	my $counter=0;
+	my $recordcounter=0;	
 	if ($handle=~/DBI/)
 	{
-		while (my $entry = $handle->fetchrow_hashref)
+	
+		# this separation looks a bit strange, but combining into a single loop resulted in a segfault from DBI that I chased 
+		# for HOURS! resolve at a later date.
+		if ($self->{'readcriteria'}->{'batchsize'} >0)
 		{
-			my %record;
-			for my $attrib (keys %$entry)
+			while ($counter <= $self->{'readcriteria'}->{'batchsize'}) 
 			{
-				$record{$attrib} = $entry->{$attrib}
+
+				my $entry = $handle->fetchrow_hashref; 
+				if (!$entry){last}
+	
+				my %record;
+				for my $attrib (keys %$entry)
+				{
+					$record{$attrib} = $entry->{$attrib}
+				}
+				$self->{'log'}->($self->{'loghandle'},"Read entry ".++$recordcounter." from the database");
+				push @records,\%record;
+				$counter++;
+							
+				$self->{'readprogress'}->();
 			}
-			$self->{'log'}->($self->{'loghandle'},"Read entry ".++$counter." from the database");
-			push @records,\%record;
+		}
+		else
+		{
+			while (my $entry = $handle->fetchrow_hashref)
+			{
+				my %record;
+				for my $attrib (keys %$entry)
+				{
+					$record{$attrib} = $entry->{$attrib}
+				}
+				$self->{'log'}->($self->{'loghandle'},"Read entry ".++$recordcounter." from the database");
+				push @records,\%record;
+				$self->{'readprogress'}->();
+			}
 		}
 	}
-
+	if (scalar @records == 0){return}
 	return \@records;
+	
 }
+
 
 #############################################################
 # Run - read the data, transform it, then write it.
 #
-# takes no parameters
+# takes no parameters (apart from object)
 # returns success or fail.
 #
 #############################################################
@@ -340,21 +455,38 @@ sub run
 	# If we don't get anything back, return 0
 	if (!$receivedata){return}
 
-	# convert to an AoH
-	my $AoHdata = $self->sourceToAoH($receivedata);
+	my $result;
+	
+	my $AoHdata=[];
+	while ($AoHdata)
+	{
+		# convert to an AoH
+		my $AoHdata = $self->sourceToAoH($receivedata);
+		if (!$AoHdata){last}
+		
+		# construct templated attributes
+		$AoHdata = $self->makebuiltattributes($AoHdata);
 
-	# construct templated attributes
-	$AoHdata = $self->makebuiltattributes($AoHdata);
+		# remap attrib names to target names
+		$AoHdata = $self->remap($AoHdata);
 
-	# remap attrib names to target names
-	$AoHdata = $self->remap($AoHdata);
+		# perform data transforms
+		$AoHdata = $self->runTransform($AoHdata);
 
-	# perform data transforms
-	$AoHdata = $self->runTransform($AoHdata);
+		# write to target
+		$result = $self->{'write'}->($self,$AoHdata);
+		
+		# jump out if not in batch mode
+		if ($self->{'readcriteria'}->{'batchsize'} == 0){last}
 
-	# write to target
-	my $result = $self->{'write'}->($self,$AoHdata);
-
+	}
+		
+	#set the timestamp	
+	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst) = localtime(time);
+	$mon+=1;
+	$year+=1900;	
+	$self->{'lastruntime'} = sprintf("%4d%02d%02d%02d%02d%02d",$year,$mon,$mday,$hour,$min,$sec);
+	
 	return $result;
 }
 
@@ -439,13 +571,13 @@ sub transforms
 		}
 		elsif ($params{$_} !~/CODE/)
 		{
-			$params{$_}=eval "sub {my \$data=shift;
+			$params{$_}=eval "sub { #!#$_#!#
+						my \$data=shift;
 						\$data =~".$params{$_}.";
 						return \$data;}";
 		}
 	}
-
-
+		
 	$self->{'transformations'}=\%params;
 
 	return 1;
@@ -486,6 +618,7 @@ sub runTransform
 			}
 		}
 		push @outData,\%record;
+		$self->{'transformprogress'}->();
 	}
 
 	return \@outData;
@@ -695,7 +828,7 @@ sub load
 			$self->{'log'}->($self->{'loghandle'},"ERROR: Unsuccessful load from $filename") ;
 		}
 		$self->{'lasterror'}="Unsuccessful load from $filename";
-		return
+		return;
 	}
 
 	return 1;
@@ -713,8 +846,23 @@ sub error
 {
 	my $self = shift;
 
-	return $self->{'lasterror'}
+	return $self->{'lasterror'};
 }
+
+########################################################################
+# lastruntime - returns last run time
+#
+# no parameters, returns datetime as YYYYMMDDHHMMSS
+#
+########################################################################
+sub lastruntime
+{
+	my $self = shift;
+	return $self->{'lastruntime'};
+}
+
+
+
 
 
 ########################################################################
@@ -739,7 +887,17 @@ sub stripnewlines
 	return $var;
 }
 
+sub uppercase
+{
+	my $var = shift;
+	return uc($var);
+}
 
+sub lowercase
+{
+	my $var =shift;
+	return lc($var);
+}
 
 
 
@@ -795,9 +953,13 @@ Data::Sync - A simple metadirectory/datapump module
 
  $sync->run();
 
+ print $sync->error();
+
+ print $sync->lastruntime();
+
 =head1 DESCRIPTION
 
-Data::Sync is a simple metadirectory/data pump module. It automates a number of the common tasks required when syncing databases & ldap directories.
+Data::Sync is a simple metadirectory/data pump module. It automates a number of the common tasks required when writing code to migrate/sync information from one datasource to another. 
 
 In order to use Data::Sync, you must define a source and a target. The first parameter to the source & target methods is a bound DBI/Net::LDAP handle.
 
@@ -848,6 +1010,12 @@ Requires a valid, bound (i.e. logged in) Net::LDAP or DBI handle, and a hash of 
 DBI parameters are:
  select
 
+By default, the source method will define the read operation as 'all in one'. If you want to handle data in batches, specify
+
+ batchsize=>x
+
+in the hash of read criteria. This will read a batch from the handle, perform the operation, read the next batch from the handle, and so on. Note that this will still be working against an entire record set matching your criteria, so the memory advantages are limited. 
+ 
 =head2 target
 
  $sync->target($dbhandle,{table=>'targettable',
@@ -865,6 +1033,8 @@ Requires a valid, bound (i.e. logged in) DBI or Net::LDAP handle, and a hash of 
 
  table - the table you wish to write to on the data target
  index - the attribute you wish to use as an index
+
+There is no 'pre check' on datatypes or lengths, so if you attempt to write a record with an oversized or mismatched data type, it will fail with an error. 
 
 Note: if you are writing from DB to LDAP, you must construct all mandatory attributes using buildattributes, or additions will fail.
 
@@ -893,6 +1063,8 @@ Converts each field in the source data using the parameters passed. Each paramet
 
  stripspaces
  stripnewline
+ uppercase
+ lowercase
 
 Note: If passing a regex in a string, make sure you use single quotes. Double quotes will invite perl to interpolate the contents, with unexpected results.
 
@@ -920,6 +1092,12 @@ No parameters. Reads the data from the source, converts and renames it as define
 
 Returns the last error encountered by the module. This is set e.g. when a file fails to load correctly, when a sql error is encountered etc. When this occurs, the return value from the called function will be zero, and error() should be called to identify the problem.
 
+=head2 lastruntime
+
+ print $sync->lastruntime;
+
+Returns the last time the job was run as YYYYMMDDHHMMSS. This is saved in the config file.
+
 =head1 PREREQS
 
 Data::Dump::Streamer
@@ -930,7 +1108,7 @@ If you are using DBI datasources, you will need DBI and the appropriate DBD driv
 
 =head1 VERSION
 
-0.02
+0.03
 
 =head1 TODO
 
@@ -940,17 +1118,33 @@ Example using AnyData & XML
 
 Deletion support (somehow, anyhow....)
 
-Delta support?
+Delta support/timestamp detection/changelog & persistent search
 
 Multiple sources in a single job?
 
 Multiple targets in a single job?
 
-UI to include non OO
+Caching?
 
-Readprogress/writeprogress/transform progress coderefs to report progress (e.g. output a .)
+UTF8/ANSI handling.
+
+Perltidy the tests (thanks for spotting the mess Gavin)
+
+Use SQL::Abstract instead of constructing statements?
 
 =head1 CHANGES
+
+v0.03
+
+Added uppercase and lowercase transformations
+
+Moved read and write subs out of anonymous blocks
+
+hid raw regex in #!#<regex>#!# inside coderef for regex transformations (can be parsed out for display/edit in gui)
+
+implemented batch updating
+
+V0.02
 
 Implemented load & save functions.
 
@@ -965,6 +1159,7 @@ Copyright (c) 2004-2005 Charles Colbourn. All rights reserved. This program is f
 =head1 AUTHOR
 
 Charles Colbourn
+
 charlesc@g0n.net
 
 =cut

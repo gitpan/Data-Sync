@@ -80,7 +80,7 @@ ok($nullok);
 # check for loading non-existent file
 my $nonok=1;
 if ($synchandle->load("fakefile.dds")){$nonok--};
-if ($synchandle->error ne "Unable to open fakefile.dds for reading because No such file or directory"){$nonok--}
+if ($synchandle->error !~ /Unable to open fakefile\.dds for reading because/){$nonok--}
 ok($nonok);
 
 # check for loading dud file
