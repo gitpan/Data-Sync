@@ -14,6 +14,10 @@
 #
 # 0.02	CColbourn		Enhancements - see POD CHANGES
 #
+# 0.03	CColbourn		Enhancements - see POD CHANGES
+#
+# 0.04	CColbourn		Enhancements - see POD CHANGES
+#
 #####################################################################
 # Notes
 # =====
@@ -25,7 +29,7 @@ use warnings;
 use Data::Dump::Streamer qw(:undump);
 
 package Data::Sync;
-our $VERSION="0.03";
+our $VERSION="0.04";
 
 #####################################################################
 # New - constructor of datasync object
@@ -64,6 +68,16 @@ sub new
 		}
 	}
 	
+	# assign the jobname (only needed if hashing or record mapping)
+	if (!$params{'jobname'})
+	{
+		$params{'jobname'}="noname";
+	}
+	$syncobject->{'name'} = $params{'jobname'};
+
+	# define the default multivalue record separator for concatenating LDAP multivalue attributes into a string
+	$syncobject->{'mvseparator'} = "|";
+	
 	# put something to stdout for progress reporting. Convenience for debugging. Deliberately undocumented
 	if ($params{'progressoutputs'})
 	{
@@ -77,7 +91,7 @@ sub new
 		if(!$params{'transformprogress'}){$syncobject->{'transformprogress'} = sub {return}};
 		if(!$params{'writeprogress'}){$syncobject->{'writeprogress'} = sub {return}};
 	}
-	
+
 	# return the object
 	return $syncobject; 
 	
@@ -110,7 +124,10 @@ sub source
 			return 1;
 		}
 	}
+
+	# assign the criteria hash as properties 
 	$self->{'readcriteria'} = $criteriaref;
+
 	if (!$self->{'readcriteria'}->{'batchsize'})
 	{
 		$self->{'readcriteria'}->{'batchsize'}=0;
@@ -243,7 +260,7 @@ sub writedbi
 		my $update = "update ".$self->{'writecriteria'}->{'table'}. " set ";
 
 		my @keys = keys %$line;
-		my @values = map $$_,values %$line;
+		my @values = map $_,values %$line;
 
 		$update.=join "=?,",@keys;
 
@@ -253,6 +270,7 @@ sub writedbi
 		$self->{'log'}->($self->{'loghandle'},"Updating $update, ".join ",",@values);
 
 		my $stm = $self->{'writehandle'}->prepare($update);
+
 		my $result = $stm->execute(@values,$line->{$self->{'writecriteria'}->{'index'}});
 		if ($result eq "0E0")
 		{
@@ -432,7 +450,69 @@ sub sourceToAoH
 			}
 		}
 	}
+
+	# if it's an empty recordset return unddef
 	if (scalar @records == 0){return}
+
+	# check against the hash records if defined and remove if the record has not changed.
+	if ($self->{'readcriteria'}->{'hashattributes'})
+	{
+
+		# required in at this point to avoid a dependency, since this functionality is optional
+		require DBI;
+		require Digest::MD5;
+
+		my @hashcheckedrecords;
+
+		my $hashdb = DBI->connect("DBI:SQLite:dbname=".$self->{'name'},"","") or die $!;
+
+		# check the hash table for this database exists - if not, create it
+		my $stm = $hashdb->prepare("select * from hashtable");
+		
+		if (!$stm)
+		{
+			$stm = $hashdb->prepare ("create table hashtable (sourcekey CHAR(100),attribhash CHAR(32),targetkey CHAR(100), status CHAR(1))");
+			$stm->execute;
+		}
+		
+		my $getstm = $hashdb->prepare ("select attribhash from hashtable where sourcekey=?");
+		my $putstm = $hashdb->prepare("insert into hashtable (sourcekey,attribhash) VALUES (?,?)");
+		my $updstm = $hashdb->prepare("update hashtable set attribhash=? where sourcekey=?");
+
+		for my $record (@records)
+		{
+			$getstm->execute(${$record}{$self->{'readcriteria'}->{'index'}});
+
+			my $oldhash = $getstm->fetchrow;
+
+			# make a hash of the current record
+			my @hashattribs = @{$self->{'readcriteria'}->{'hashattributes'}};
+			my $attribstring;
+			for (@hashattribs)
+			{
+				if (!ref($_))
+				{
+					$attribstring .= $$record{$_}
+				}
+			}
+
+			my $newhash = Digest::MD5->new;
+			$newhash->add($attribstring);
+
+			if (!$oldhash)
+			{
+				$putstm->execute(${$record}{$self->{'readcriteria'}->{'index'}},$newhash->hexdigest);
+				push @hashcheckedrecords,$record;
+			}
+ 			elsif($oldhash ne $newhash->hexdigest)
+			{
+				$updstm->execute($newhash->hexdigest,${$record}{$self->{'readcriteria'}->{'index'}});
+				push @hashcheckedrecords,$record;
+			}
+		}
+		@records = @hashcheckedrecords;
+	}
+
 	return \@records;
 	
 }
@@ -564,8 +644,10 @@ sub transforms
 	# if param is a regex, transform to a coderef
 	for (keys %params)
 	{
-		# turn a function name into a coderef
-		if ($params{$_} =~/^\w+$/)
+		# capture the concatenate special case
+		if ($params{$_} =~/^concatenate$/){}
+		# otherwise turn a function name into a coderef
+		elsif ($params{$_} =~/^\w+$/)
 		{
 			$params{$_} = \&{$params{$_}};
 		}
@@ -639,7 +721,15 @@ sub recursiveTransform
 	my $data = shift;
 	my $transformation = shift;
 
-	if ($data =~/ARRAY/)
+
+	# if the transformation is to join values together
+	if ($data =~/ARRAY/ && $transformation eq "concatenate")
+	{
+		my $string = join $self->{'mvseparator'},@$data;
+		$data = $string;
+	}
+	# otherwise act on each instance
+	elsif ($data =~/ARRAY/)
         {
                 for (0..scalar @$data -1)
                 {
@@ -861,6 +951,25 @@ sub lastruntime
 	return $self->{'lastruntime'};
 }
 
+#######################################################################
+# mvseparator - convenience function to change the multivalue
+# separator
+#
+# takes scalar or null
+# returns true or separator
+#
+#######################################################################
+sub mvseparator
+{
+	my $self = shift;
+	my $separator = shift;
+	if (!$separator){return $self->{mvseparator}}
+	else 
+	{
+		$self->{mvseparator} = $separator;
+		return 1;
+	}
+}
 
 
 
@@ -900,8 +1009,6 @@ sub lowercase
 }
 
 
-
-
 1;
 
 #########################################################################
@@ -920,9 +1027,13 @@ Data::Sync - A simple metadirectory/datapump module
 
  use Data::Sync;
 
- my $sync = Data::Sync->new(log=>"STDOUT",[configfile=>"config.dds"]);
+ my $sync = Data::Sync->new(log=>"STDOUT",[configfile=>"config.dds"],[jobname=>"MyJob"]);
 
- $sync->source($dbhandle,{select=>"select * from testtable"});
+ $sync->source($dbhandle,{
+				select=>"select * from testtable",
+				index=>"NAME",
+				hashattributes=>["ADDRESS","PHONE"]
+			});
 
  or
 
@@ -978,9 +1089,11 @@ B<WARNING!> There is no implied or real warranty associated with the use of this
  my $sync = Data::Sync->new(log=>"STDOUT");
  my $sync = Data::Sync->new(log=>$fh);
  my $sync = Data::Sync->new(configfile=>"config.dds");
+ my $sync = Data::Sync->new(jobname=>"MyJob");
 
-The constructor returns a Data::Sync object. To use logging, pass the string STDOUT as the log parameter to print logging to STDOUT, or a lexical filehandle.
-Optionally, you can specify a config file, although you'll still need pass the db/ldap handles (only) to source & target.
+The constructor returns a Data::Sync object. Optionally, to use logging, pass the string STDOUT as the log parameter to print logging to STDOUT, or a lexical filehandle.  You can specify a config file to get the configuration from, in which case you don't need to call mappings/transforms etc, although you'll still need pass the db/ldap handles (only) to source & target.
+
+If you are using attribute hashing to minimise unnecessary writes, you should specify a jobname, as this is the name given to the SQLite hash database.
 
 =head1 METHODS
 
@@ -1010,11 +1123,20 @@ Requires a valid, bound (i.e. logged in) Net::LDAP or DBI handle, and a hash of 
 DBI parameters are:
  select
 
+Other source options:
+
 By default, the source method will define the read operation as 'all in one'. If you want to handle data in batches, specify
 
  batchsize=>x
 
 in the hash of read criteria. This will read a batch from the handle, perform the operation, read the next batch from the handle, and so on. Note that this will still be working against an entire record set matching your criteria, so the memory advantages are limited. 
+
+Attribute hashing can be specified with the keys:
+
+ index=>"index/key attribute"
+ hashattributes=>["attrib","attrib","attrib"]
+
+When running, this will create an MD5 hash of the concatentation of the specified attributes, and store it in a database under the specified index. Next time the job is run, it will hash the value again, and compare it with the last hashed value. If they are the same, the record will not be written to the target. These entries are stored in a SQLite database - if you want to manipulate the database directly, you can do so with a sqlite3 client. The SQLite database takes it's name from the 'jobname' attribute specified in $sync->new. If you didn't specify a jobname, it will default to 'noname' - so if you are running multiple jobs with attribute hashing in the same directory on your disk, it's important to make sure they have names.
  
 =head2 target
 
@@ -1053,7 +1175,7 @@ Builds new target attributes up from existing source attributes. A simple templa
 
 =head2 transforms
 
- $sync->transforms(	PHONE=>'s/0(\\d{4})/\+44 \(\$1\)'/’,
+ $sync->transforms(	PHONE=>'s/0(\\d{4})/\+44 \(\$1\)/',
 			OFFICE=>"stripspaces",
 			ADDRESS=>sub{my $address=shift;
 			$address=~s/\n/\<BR\>/g;
@@ -1065,8 +1187,15 @@ Converts each field in the source data using the parameters passed. Each paramet
  stripnewline
  uppercase
  lowercase
+ concatenate
 
-Note: If passing a regex in a string, make sure you use single quotes. Double quotes will invite perl to interpolate the contents, with unexpected results.
+concatenate joins together the values of a multi valued attribute with the content of $sync->{mvseparator} - this defaults to | but can be changed with:
+
+ $sync->mvseparator("<separator>");
+
+Transformations are recursive, so if you are importing some form of hierarchical data, the transformation will walk the tree until it finds a scalar (or a list, in the case of concatenate) that it can perform the transformation on.
+
+Note: If passing a regex in a string, make sure you use single quotes. Double quotes will invite perl to interpolate the contents, with unexpected results. 
 
 =head2 save
 
@@ -1098,21 +1227,31 @@ Returns the last error encountered by the module. This is set e.g. when a file f
 
 Returns the last time the job was run as YYYYMMDDHHMMSS. This is saved in the config file.
 
+=head2 mvseparator
+
+ $sync->mvseparator("<separator>");
+
+ print $sync->mvseparator();
+
+Sets or returns the multi valued attribute separator. (defaults to |)
+
 =head1 PREREQS
 
 Data::Dump::Streamer
 
+If you are using DBI datasources, you will need DBI & the appropriate DBI drivers.
+
 If you are using LDAP datasources, you will need Net::LDAP.
 
-If you are using DBI datasources, you will need DBI and the appropriate DBD drivers.
+If you are using attribute hashing, you will also need DBI & DBD::SQLite
 
 =head1 VERSION
 
-0.03
+0.04
 
 =head1 TODO
 
-Transform to convert multivalued attribs to single valued (choice: use value[index], join with delimiter)
+Modular datasource/targets for including non dbi/ldap datasources.
 		
 Example using AnyData & XML
 
@@ -1133,6 +1272,12 @@ Perltidy the tests (thanks for spotting the mess Gavin)
 Use SQL::Abstract instead of constructing statements?
 
 =head1 CHANGES
+
+v0.04
+
+Implemented basic attribute hashing
+
+Added concatenate function for multivalued ldap attributes
 
 v0.03
 

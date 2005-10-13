@@ -12,8 +12,13 @@ open ($logfile,">","logfile.txt");
 my $synchandle = Data::Sync->new(log=>$logfile,
 				progressoutputs=>1);
 
-$synchandle->source($db,{'select'=>"SELECT * from source",
-			});
+$synchandle->source($db,
+			{
+				'select'=>"SELECT * from source",
+				hashattributes=>["NAME","ADDRESS","PHONE"],
+				index=>"NAME"
+			} );
+
 $synchandle->target($db,{'table'=>'target',
 				'index'=>'NAME'});
 

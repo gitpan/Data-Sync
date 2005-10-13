@@ -4,7 +4,7 @@ use Test;
 use Data::Sync;
 
 BEGIN {
-    plan tests => 7;
+    plan tests => 9;
 }
 
 my $synchandle = Data::Sync->new();
@@ -34,6 +34,13 @@ my @AoH = (
     {
 	"lowerattrib" => "Some Chars In Lower Case",
 	"upperattrib" => "Some Chars In Upper Case"
+    },
+    {
+	"multivaluedattrib" => [
+				"one",
+				"two",
+				"three"
+				]
     }
 );
 
@@ -48,7 +55,9 @@ $synchandle->transforms(
     longaddress   => "stripnewlines",
     "description" => "",
     lowerattrib	  => "uppercase",
-    upperattrib   => "lowercase"
+    upperattrib   => "lowercase",
+    multivaluedattrib => "concatenate",
+    
 );
 
 my $result = $synchandle->runTransform( \@AoH );
@@ -98,3 +107,13 @@ if ($result->[4]->{'upperattrib'} ne "some chars in upper case"){$casecheck2--}
 ok($casecheck1);
 ok($casecheck2);
 
+# check concatenation function
+my $mvcheck=1;
+if ($result->[5]->{'multivaluedattrib'} ne "one|two|three"){$mvcheck--}
+ok($mvcheck);
+
+# check mvseparator returns the separator value
+my $sepcheck=1;
+$synchandle->mvseparator('$');
+if ($synchandle->mvseparator ne '$'){$sepcheck--}
+ok($sepcheck);
