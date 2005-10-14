@@ -1,7 +1,7 @@
 
 use DBI;
 
-my $db = DBI->connect("DBI:SQLite:dbname=testdb","","");
+my $db = DBI->connect("DBI:mysql:dbname=testdb","","");
 
 $db->do("create table source (NAME CHAR(20),ADDRESS CHAR(20),PHONE CHAR(20))");
 

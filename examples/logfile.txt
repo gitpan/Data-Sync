@@ -1,0 +1,130 @@
+Read entry 1 from the database
+Read entry 2 from the database
+Read entry 3 from the database
+Read entry 4 from the database
+Read entry 5 from the database
+Read entry 6 from the database
+Read entry 7 from the database
+Read entry 8 from the database
+Read entry 9 from the database
+Read entry 10 from the database
+Read entry 11 from the database
+Read entry 12 from the database
+Read entry 13 from the database
+Read entry 14 from the database
+Read entry 15 from the database
+Read entry 16 from the database
+Read entry 17 from the database
+Read entry 18 from the database
+Read entry 19 from the database
+Read entry 20 from the database
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Remapped name to name
+Remapped address to postal
+Remapped phone to telephone
+Transformed phone 1              to phene 1             
+Transformed phone 2              to phene 2             
+Transformed phone 3              to phene 3             
+Transformed phone 4              to phene 4             
+Transformed phone 5              to phene 5             
+Transformed phone 6              to phene 6             
+Transformed phone 7              to phene 7             
+Transformed phone 8              to phene 8             
+Transformed phone 9              to phene 9             
+Transformed phone 10             to phene 10            
+Transformed phone 11             to phene 11            
+Transformed phone 12             to phene 12            
+Transformed phone 13             to phene 13            
+Transformed phone 14             to phene 14            
+Transformed phone 15             to phene 15            
+Transformed phone 16             to phene 16            
+Transformed phone 17             to phene 17            
+Transformed phone 18             to phene 18            
+Transformed phone 19             to phene 19            
+Transformed phone 20             to phene 20            
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 1             ,name 1              ,address 1           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 2             ,name 2              ,address 2           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 3             ,name 3              ,address 3           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 4             ,name 4              ,address 4           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 5             ,name 5              ,address 5           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 6             ,name 6              ,address 6           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 7             ,name 7              ,address 7           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 8             ,name 8              ,address 8           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 9             ,name 9              ,address 9           
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 10            ,name 10             ,address 10          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 11            ,name 11             ,address 11          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 11            ,name 11             ,address 11          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 12            ,name 12             ,address 12          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 12            ,name 12             ,address 12          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 13            ,name 13             ,address 13          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 13            ,name 13             ,address 13          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 14            ,name 14             ,address 14          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 14            ,name 14             ,address 14          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 15            ,name 15             ,address 15          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 15            ,name 15             ,address 15          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 16            ,name 16             ,address 16          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 16            ,name 16             ,address 16          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 17            ,name 17             ,address 17          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 17            ,name 17             ,address 17          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 18            ,name 18             ,address 18          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 18            ,name 18             ,address 18          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 19            ,name 19             ,address 19          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 19            ,name 19             ,address 19          
+Updating update target set telephone=?,name=?,postal=? where name=?, phene 20            ,name 20             ,address 20          
+Update failed, adding insert into target (telephone,name,postal) VALUES (?,?,?), phene 20            ,name 20             ,address 20          

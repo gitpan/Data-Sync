@@ -18,6 +18,8 @@
 #
 # 0.04	CColbourn		Enhancements - see POD CHANGES
 #
+# 0.05	CColbourn		Bugfix - see POD CHANGES
+#
 #####################################################################
 # Notes
 # =====
@@ -29,7 +31,7 @@ use warnings;
 use Data::Dump::Streamer qw(:undump);
 
 package Data::Sync;
-our $VERSION="0.04";
+our $VERSION="0.05";
 
 #####################################################################
 # New - constructor of datasync object
@@ -185,7 +187,7 @@ sub readdbi
 	
 	my $stm = $self->{'readhandle'}->prepare($self->{'readcriteria'}->{'select'}) or return;
 	my $result = $stm->execute;
-	if ($result eq "0E0"){return $stm}
+	if ($result || $result eq "0E0"){return $stm}
 	else
 	{
 		$self->{'log'}->($self->{'loghandle'},"ERROR: Could not read from database");
@@ -272,7 +274,7 @@ sub writedbi
 		my $stm = $self->{'writehandle'}->prepare($update);
 
 		my $result = $stm->execute(@values,$line->{$self->{'writecriteria'}->{'index'}});
-		if ($result eq "0E0")
+		if (!$result || $result eq "0E0")
 		{
 			my $insert = "insert into ".$self->{'writecriteria'}->{'table'}." (";
 			$insert .= join ",",@keys;
@@ -283,7 +285,7 @@ sub writedbi
 			$stm = $self->{'writehandle'}->prepare($insert);
 			$result = $stm->execute(@values);
 		}
-		if ($result eq "0E0")
+		if (!$result || $result eq "0E0")
 		{
 			$self->{'log'}->($self->{'loghandle'},"ERROR: Add failed because ".$self->{'writehandle'}->errstr);
 			$self->{'lasterror'}="ERROR: Add failed because ".$self->{'writehandle'}->errstr;
@@ -1247,11 +1249,15 @@ If you are using attribute hashing, you will also need DBI & DBD::SQLite
 
 =head1 VERSION
 
-0.04
+0.05
+
+=head1 BUGS & CAVEATS
+
+Data::Sync handles column/attribute names as case sensitive. Postgresql (at least at time of writing) appears to return column names as lc, whether they're created lc or not. I make no guarantees about this, but using lower case column names in all Data::Sync code seems to work OK. Please ensure that any code you write using this module with postgresql is particularly thoroughly tested.
 
 =head1 TODO
 
-Modular datasource/targets for including non dbi/ldap datasources.
+Modular datasource/targets for including non dbi/ldap datasources?
 		
 Example using AnyData & XML
 
@@ -1272,6 +1278,14 @@ Perltidy the tests (thanks for spotting the mess Gavin)
 Use SQL::Abstract instead of constructing statements?
 
 =head1 CHANGES
+
+v0.05
+
+Fixed some 0E0 problems with return values from DBI.
+
+Added postgresql caveat.
+
+Extended developer test suite to include MySQL & Postgresql
 
 v0.04
 
