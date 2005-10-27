@@ -7,7 +7,7 @@ $db->do("create table source (name CHAR(20),address CHAR(20),phone CHAR(20))");
 
 $sth=$db->prepare("insert into source (name,address,phone) VALUES (?,?,?)");
 
-for (1..20)
+for (1..20000)
 {
 	$sth->execute("name $_","address $_","phone $_");
 }

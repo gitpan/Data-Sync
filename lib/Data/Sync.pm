@@ -20,6 +20,8 @@
 #
 # 0.05	CColbourn		Bugfix - see POD CHANGES
 #
+# 0.06	CColbourn		Enhancements - see POD CHANGES
+#
 #####################################################################
 # Notes
 # =====
@@ -31,7 +33,7 @@ use warnings;
 use Data::Dump::Streamer qw(:undump);
 
 package Data::Sync;
-our $VERSION="0.05";
+our $VERSION="0.06";
 
 #####################################################################
 # New - constructor of datasync object
@@ -555,6 +557,18 @@ sub run
 		# perform data transforms
 		$AoHdata = $self->runTransform($AoHdata);
 
+		if ($self->{validation})
+		{
+			my $result = $self->validate($AoHdata);
+			if (!$result)
+			{
+				$self->{lasterror} = "ERROR: Validation failed";
+				return undef;
+			}
+			
+		}
+
+
 		# write to target
 		$result = $self->{'write'}->($self,$AoHdata);
 		
@@ -973,8 +987,127 @@ sub mvseparator
 	}
 }
 
+########################################################################
+# commit - commit the write handle
+#
+# takes null
+# returns result
+#
+########################################################################
+sub commit
+{
+	my $self = shift;
+	my $result;
 
+	$result = $self->{target}->{writehandle}->commit();
 
+	return $result;
+}	
+
+########################################################################
+# validate - checks that the data in the dataset is what you expect
+#
+# takes hash of param=>regex
+#
+# returns t/f
+#
+########################################################################
+sub validation
+{
+	my $self = shift;
+	my %params = @_;
+
+	for my $attrib (keys %params)
+	{
+		$self->{validation}->{$attrib} = eval "sub { my \$self =shift;
+							my \$string = shift;
+							return \$string =~ $params{$attrib};}";
+	}
+
+	return 1;
+}
+
+#########################################################################
+# validate - run the validation
+#
+# takes AoH
+# returns t/f & logs
+#
+#########################################################################
+sub validate
+{
+	my $self = shift;
+	my $AoH = shift;
+	my $errorflag = 0;
+
+	for my $record (@$AoH)
+	{
+		
+		my $errorcounter;	
+		for my $attrib (keys %$record)
+		{
+			# only try to validate the field if a validation pattern match is defined
+			if (!$self->{validation}->{$attrib}){next}
+
+			# recursively validate, in case of multi valued attributes
+			my $result =  $self->recursivevalidate($$record{$attrib},$self->{validation}->{$attrib});
+			$errorcounter +=(!$result);
+		}
+		$self->{log}->($self->{loghandle},"Record ". join ",",values %$record," validated with $errorcounter errors");
+		if ($errorcounter){$errorflag+= $errorcounter }
+	}
+
+	$self->{log}->($self->{loghandle},"Validation completed with $errorflag errors");
+	if ($errorflag > 0) {return}
+	else {return 1}
+
+}
+
+########################################################################
+# recursivevalidate - run the validation coderefs against a complex
+#  object
+########################################################################
+sub recursivevalidate
+{
+	my $self = shift;
+	my $value = shift;
+	my $matchref = shift;
+
+	if (!ref($value))
+	{
+		# take a copy of the value and regex that, just to make sure
+		# we don't accidentally do a s///
+		my $tempvalue = $value;
+		my $result = $matchref->($self,$tempvalue);
+		return $result;
+	}
+
+	elsif ($value =~ /ARRAY/)
+	{
+		my $errorcounter;
+		for (@$value)
+		{
+			my $result = $self->recursivevalidate($_,$matchref);
+			$errorcounter +=(!$result);
+		}
+		if ($errorcounter){return}
+		return 1;
+	}
+	
+	elsif ($value =~/HASH/)
+	{
+		
+		my $errorcounter;
+		for (values %$value)
+		{
+			my $result = $self->recursivevalidate($_,$matchref);
+			$errorcounter +=(!$result);
+		}
+		if ($errorcounter){return}
+		return 1;
+	}
+
+}
 
 ########################################################################
 ########################################################################
@@ -1009,6 +1142,7 @@ sub lowercase
 	my $var =shift;
 	return lc($var);
 }
+
 
 
 1;
@@ -1055,10 +1189,13 @@ Data::Sync - A simple metadirectory/datapump module
  $sync->buildattributes(dn=>"cn=%NAME%,ou=testcontainer,dc=test,dc=org",
 			objectclass=>"organizationalUnit");
 
- $sync->transforms(PHONE=>'s/0(\d{4})/\+44 \($1\) /',
+ $sync->transforms(	PHONE=>'s/0(\d{4})/\+44 \($1\) /',
 			ADDRESS=>sub{my $address=shift;
 					$address=~s/\n/\<BR\>/g;
 					return $address});
+
+ $sync->validation(	address=>"/street/i",
+			name=>"/(Dr|Mr|Mrs|Ms|Miss)/" );
 
  $sync->save("filename");
 
@@ -1069,6 +1206,8 @@ Data::Sync - A simple metadirectory/datapump module
  print $sync->error();
 
  print $sync->lastruntime();
+
+ print $sync->commit();
 
 =head1 DESCRIPTION
 
@@ -1082,7 +1221,7 @@ Attributes can be built up from multiple other attributes using buildattributes.
 
 Transforms can be made with the method transforms, which takes a hash of FIELDNAME=>transformation. This transformation can be one of three things: a regular expression in string form (see synopsis), the name of a predefined transformation supplied in Data::Sync, or a code ref.
 
-Finally, if you are confident your data is all in the right format, use run. That will read the data from the source, modify it as you have specified, and write it to the target.
+Finally, if you are confident your data is all in the right format, use run. That will read the data from the source, modify it as you have specified, validate it against the pattern matches you've specified (if any) and write it to the target.
 
 B<WARNING!> There is no implied or real warranty associated with the use of this software. That's fairly obvious, but worth repeating here. Metadirectory applications have the potential to destroy data in a very big way - they must be constructed carefully, and thoroughly tested before use on a live system.
 
@@ -1199,6 +1338,13 @@ Transformations are recursive, so if you are importing some form of hierarchical
 
 Note: If passing a regex in a string, make sure you use single quotes. Double quotes will invite perl to interpolate the contents, with unexpected results. 
 
+=head2 validation
+
+ $sync->validation(	address=>"/street/i",
+			name=>"/(Dr|Mr|Mrs|Ms|Miss)/" );
+
+Validation defines pattern matches for attributes. The validation methods are the last to be called before writing. If any of the specified fields fail to match the specified pattern match, the whole validation will fail and the write will not happen. Validation is optional, you don't have to specify a validation set, but it's useful to ensure that the constructed record set is what you were expecting before you write it out. Validation is also recursive, so it will handle multi valued attributes and subtrees in LDAP.
+
 =head2 save
 
  $sync->save("filename");
@@ -1237,6 +1383,12 @@ Returns the last time the job was run as YYYYMMDDHHMMSS. This is saved in the co
 
 Sets or returns the multi valued attribute separator. (defaults to |)
 
+=head2 commit
+
+ $sync->commit();
+
+Calls the write handle commit method, where the write handle is DBI (there's no rollback/commit available in LDAP). This is provided as a convenience, just in case you have autocommit turned off on your db handle.
+
 =head1 PREREQS
 
 Data::Dump::Streamer
@@ -1249,13 +1401,15 @@ If you are using attribute hashing, you will also need DBI & DBD::SQLite
 
 =head1 VERSION
 
-0.05
+0.06
 
 =head1 BUGS & CAVEATS
 
 Data::Sync handles column/attribute names as case sensitive. Postgresql (at least at time of writing) appears to return column names as lc, whether they're created lc or not. I make no guarantees about this, but using lower case column names in all Data::Sync code seems to work OK. Please ensure that any code you write using this module with postgresql is particularly thoroughly tested.
 
 =head1 TODO
+
+Friendly CSV/TD source/target methods
 
 Modular datasource/targets for including non dbi/ldap datasources?
 		
@@ -1278,6 +1432,12 @@ Perltidy the tests (thanks for spotting the mess Gavin)
 Use SQL::Abstract instead of constructing statements?
 
 =head1 CHANGES
+
+v0.06
+
+Implemented a commit method for the writehandle.
+
+Implemented validate function
 
 v0.05
 

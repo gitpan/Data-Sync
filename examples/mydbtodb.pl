@@ -3,7 +3,7 @@ use DBI;
 use strict;
 
 
-my $db = DBI->connect("DBI:mysql:dbname=testdb","","");
+my $db = DBI->connect("DBI:mysql:dbname=testdb","root","");
 
 use Data::Sync;
 my $logfile;
