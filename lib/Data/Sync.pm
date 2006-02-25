@@ -22,6 +22,8 @@
 #
 # 0.06	CColbourn		Enhancements - see POD CHANGES
 #
+# 0.07	CColbourn		Enhancements - see POD CHANGES
+#
 #####################################################################
 # Notes
 # =====
@@ -30,10 +32,10 @@
 
 use strict;
 use warnings;
-use Data::Dump::Streamer qw(:undump);
+
 
 package Data::Sync;
-our $VERSION="0.06";
+our $VERSION="0.07";
 
 #####################################################################
 # New - constructor of datasync object
@@ -54,7 +56,7 @@ sub new
 	# define logging. If logging not set, use a coderef of return
 	if ($params{'log'})
 	{
-		$syncobject->{'log'} = \&log;
+		$syncobject->{'log'} = \&writelog;
 		$syncobject->{'loghandle'} = $params{'log'};
 	}
 	else
@@ -167,7 +169,8 @@ sub readldap
 		(filter=>$self->{'readcriteria'}->{'filter'},
 		base=>$self->{'readcriteria'}->{'base'},
 		scope=>$self->{'readcriteria'}->{'scope'},
-		attrs=>$self->{'readcriteria'}->{'attrs'});
+		attrs=>$self->{'readcriteria'}->{'attrs'},
+		controls=>[$self->{'readcriteria'}->{'controls'}]);
 	if ($result->code)
 	{
 		$self->{'log'}->($self->{'loghandle'},"ERROR:".$result->error);
@@ -232,7 +235,20 @@ sub target
 		$self->{'writecriteria'} = $criteriaref;
 	}
 
+	# LDAP index is /always/ DN, but an index is needed for hashing.
+	if ($handle =~ /LDAP/){$criteriaref->{index} = "dn"}
 	
+	
+	# Checking for fubars
+	if ($criteriaref->{hashattributes} && !$criteriaref->{index})
+	{
+		$self->{log}->($self->{loghandle},"Can't set a target with hashing and no index!");
+		$self->lasterror = "Can't set a target with hashing and no index!";
+		return;
+	}
+	
+	
+		
 	# create coderef to write to LDAP
 	if ($handle =~/LDAP/)
 	{
@@ -259,40 +275,76 @@ sub writedbi
 	my $self = shift;
 	my $writedata = shift;
 
+		
 	for my $line (@$writedata)
 	{
-		my $update = "update ".$self->{'writecriteria'}->{'table'}. " set ";
-
+		if ($line->{'Data::Sync::Action'} && $line->{'Data::Sync::Action'} eq "DELETE")
+		{
+			my $delete = "delete from ".$self->{writecriteria}->{table}. " where ";
+			$delete .= $self->{writecriteria}->{index} ."=?";
+			
+			my $stm = $self->{writehandle}->prepare($delete);
+			
+			my $result = $stm->execute($line->{$self->{writecriteria}->{index}});
+			if (!$result || $result eq "0E0")
+			{
+				$self->{'log'}->($self->{'loghandle'},"ERROR: Delete failed because ".$self->{'writehandle'}->errstr);
+				$self->{'lasterror'}="ERROR: Delete failed because ".$self->{'writehandle'}->errstr;
+			}
+			
+			next;
+		}
+		
+		# Otherwise, the entry must be an update/add
 		my @keys = keys %$line;
 		my @values = map $_,values %$line;
+		
+		if ($self->{writecriteria}->{index})
+		{
+			my $update = "update ".$self->{'writecriteria'}->{'table'}. " set ";
 
-		$update.=join "=?,",@keys;
+			my @keys = keys %$line;
+			my @values = map $_,values %$line;
 
-		$update .="=? where ";
-		$update .= $self->{'writecriteria'}->{'index'};
-		$update .="=?";
-		$self->{'log'}->($self->{'loghandle'},"Updating $update, ".join ",",@values);
+			$update.=join "=?,",@keys;
 
-		my $stm = $self->{'writehandle'}->prepare($update);
+			$update .="=? where ";
+			$update .= $self->{'writecriteria'}->{'index'};
+			$update .="=?";
+			$self->{'log'}->($self->{'loghandle'},"Updating $update, ".join ",",@values);
 
-		my $result = $stm->execute(@values,$line->{$self->{'writecriteria'}->{'index'}});
-		if (!$result || $result eq "0E0")
+			my $stm = $self->{'writehandle'}->prepare($update);
+
+			my $result = $stm->execute(@values,$line->{$self->{'writecriteria'}->{'index'}});
+			if (!$result || $result eq "0E0")
+			{
+				my $insert = "insert into ".$self->{'writecriteria'}->{'table'}." (";
+				$insert .= join ",",@keys;
+				$insert .=") VALUES (";
+				$insert .=join ",",map { "?" } (0..scalar @values-1);
+				$insert .=")";
+				$self->{'log'}->($self->{'loghandle'},"Update failed, adding $insert, ".join ",",@values);
+				$stm = $self->{'writehandle'}->prepare($insert);
+				$result = $stm->execute(@values);
+			}
+			if (!$result || $result eq "0E0")
+			{
+				$self->{'log'}->($self->{'loghandle'},"ERROR: Add failed because ".$self->{'writehandle'}->errstr);
+				$self->{'lasterror'}="ERROR: Add failed because ".$self->{'writehandle'}->errstr;
+			}
+			$self->{'writeprogress'}->($line->{$self->{'writecriteria'}->{'index'}});		
+		}
+		else
 		{
 			my $insert = "insert into ".$self->{'writecriteria'}->{'table'}." (";
 			$insert .= join ",",@keys;
 			$insert .=") VALUES (";
 			$insert .=join ",",map { "?" } (0..scalar @values-1);
 			$insert .=")";
-			$self->{'log'}->($self->{'loghandle'},"Update failed, adding $insert, ".join ",",@values);
-			$stm = $self->{'writehandle'}->prepare($insert);
-			$result = $stm->execute(@values);
-		}
-		if (!$result || $result eq "0E0")
-		{
-			$self->{'log'}->($self->{'loghandle'},"ERROR: Add failed because ".$self->{'writehandle'}->errstr);
-			$self->{'lasterror'}="ERROR: Add failed because ".$self->{'writehandle'}->errstr;
-		}
-		$self->{'writeprogress'}->($line->{$self->{'writecriteria'}->{'index'}});		
+			$self->{'log'}->($self->{'loghandle'},"Adding $insert, ".join ",",@values);
+			my $stm = $self->{'writehandle'}->prepare($insert);
+			my $result = $stm->execute(@values);
+		}		
 	}
 
 }
@@ -312,13 +364,56 @@ sub writeldap
 	my $self = shift;
 	my $writedata = shift;
 
+	#if ($self->{'writecriteria'}->{'hashattributes'})
+	#{
+	#	my $checkedrecordset = $self->scanhashtable($writedata);
+	#	$writedata = $checkedrecordset;
+	#}
+
+	
 	foreach my $line (@$writedata)
 	{
 		my $dn = $line->{'dn'};
 
-		delete $line->{'dn'};
-		$self->{'log'}->($self->{'loghandle'},"Modifying $dn, values ".join ",",values %$line);
+		delete $line->{'dn'}; # don't want the dn included in the hash of attrs to write
 		
+		if ($line->{'Data::Sync::Action'} && $line->{'Data::Sync::Action'} eq "DELETE")
+		{
+			my $result = $self->{'writehandle'}->delete($dn);
+			if ($result->code)
+			{
+				$self->{'log'}->($self->{'loghandle'},"Delete of $dn failed because ".$result->error);
+				$self->{lasterror} = "Delete of $dn failed because ".$result->error;
+			}
+			else
+			{
+				$self->{'log'}->($self->{'loghandle'},"Deleted $dn");
+			}
+			next;
+		}
+		
+		# otherwise it's a modify or add
+			
+		
+		$self->{'log'}->($self->{'loghandle'},"Modifying $dn, values ".join ",",values %$line);
+
+		# experimental problem solution 20060212 - sunone/fedora and (possibly) AD will not permit a 'replace' on the objectclass
+		# attribute in a modify - so we want to cover that off. Remove from the structure /unless/ a flag is set (document in ::Advanced)
+		#my $modline = $line;
+		#if (!$self->{writeobjectclass})
+		#{
+		#	for (keys %$modline)
+		#	{
+		#		print "$_ --\n";
+		#		if (lc($_) eq "objectclass")
+		#		{
+		#			delete $$modline{$_};
+		#		}
+		#	}
+		#}
+		
+	
+	
 		my $result =
 			$self->{'writehandle'}->modify
 			(
@@ -329,7 +424,7 @@ sub writeldap
 		
 		if ($result->code)
 		{
-			$self->{'log'}->($self->{'loghandle'},"Modify failed, adding $dn, values ".join ",",values %$line);
+			$self->{'log'}->($self->{'loghandle'},"Modify failed '".$result->error."', adding $dn, values ".join ",",values %$line);
 			$result =
 				$self->{'writehandle'}->add
 				(
@@ -376,149 +471,301 @@ sub sourceToAoH
 	# Convert LDAP
 	if ($handle=~/LDAP/)
 	{
-		if ($self->{'readcriteria'}->{'batchsize'} >0)
-		{
-			while ($counter<= $self->{'readcriteria'}->{'batchsize'})
-			{
-				my $entry=$handle->shift_entry;
-				if (!$entry){last}
-				my %record;
-				for my $attrib ($entry->attributes)
-				{
-					$record{$attrib} = $entry->get_value($attrib);
-				}
-				$self->{'log'}->($self->{'loghandle'},"Read ".$entry->dn." from the directory");
-				push @records,\%record;
-				$counter++;
-				$self->{'readprogress'}->($entry->dn);
-			}
-		}
-		else
-		{
-			while (my $entry=$handle->shift_entry)
-			{
-				my %record;
-				for my $attrib ($entry->attributes)
-				{
-					$record{$attrib} = $entry->get_value($attrib);
-				}
-				$self->{'log'}->($self->{'loghandle'},"Read ".$entry->dn." from the directory");
-				push @records,\%record;
-				$counter++;
-				$self->{'readprogress'}->($entry->dn);
-			}
-		}	
-		
-		
-		
+		my $recordset = $self->ldapToAoH($handle);
+		@records = @$recordset;
 	}
-
-	my $recordcounter=0;	
+	
+	# convert DBI
 	if ($handle=~/DBI/)
 	{
-	
-		# this separation looks a bit strange, but combining into a single loop resulted in a segfault from DBI that I chased 
-		# for HOURS! resolve at a later date.
-		if ($self->{'readcriteria'}->{'batchsize'} >0)
-		{
-			while ($counter <= $self->{'readcriteria'}->{'batchsize'}) 
-			{
-
-				my $entry = $handle->fetchrow_hashref; 
-				if (!$entry){last}
-	
-				my %record;
-				for my $attrib (keys %$entry)
-				{
-					$record{$attrib} = $entry->{$attrib}
-				}
-				$self->{'log'}->($self->{'loghandle'},"Read entry ".++$recordcounter." from the database");
-				push @records,\%record;
-				$counter++;
-							
-				$self->{'readprogress'}->();
-			}
-		}
-		else
-		{
-			while (my $entry = $handle->fetchrow_hashref)
-			{
-				my %record;
-				for my $attrib (keys %$entry)
-				{
-					$record{$attrib} = $entry->{$attrib}
-				}
-				$self->{'log'}->($self->{'loghandle'},"Read entry ".++$recordcounter." from the database");
-				push @records,\%record;
-				$self->{'readprogress'}->();
-			}
-		}
+		my $recordset = $self->dbiToAoH($handle);
+		@records = @$recordset;
 	}
+	
 
 	# if it's an empty recordset return unddef
 	if (scalar @records == 0){return}
 
 	# check against the hash records if defined and remove if the record has not changed.
-	if ($self->{'readcriteria'}->{'hashattributes'})
-	{
-
-		# required in at this point to avoid a dependency, since this functionality is optional
-		require DBI;
-		require Digest::MD5;
-
-		my @hashcheckedrecords;
-
-		my $hashdb = DBI->connect("DBI:SQLite:dbname=".$self->{'name'},"","") or die $!;
-
-		# check the hash table for this database exists - if not, create it
-		my $stm = $hashdb->prepare("select * from hashtable");
-		
-		if (!$stm)
-		{
-			$stm = $hashdb->prepare ("create table hashtable (sourcekey CHAR(100),attribhash CHAR(32),targetkey CHAR(100), status CHAR(1))");
-			$stm->execute;
-		}
-		
-		my $getstm = $hashdb->prepare ("select attribhash from hashtable where sourcekey=?");
-		my $putstm = $hashdb->prepare("insert into hashtable (sourcekey,attribhash) VALUES (?,?)");
-		my $updstm = $hashdb->prepare("update hashtable set attribhash=? where sourcekey=?");
-
-		for my $record (@records)
-		{
-			$getstm->execute(${$record}{$self->{'readcriteria'}->{'index'}});
-
-			my $oldhash = $getstm->fetchrow;
-
-			# make a hash of the current record
-			my @hashattribs = @{$self->{'readcriteria'}->{'hashattributes'}};
-			my $attribstring;
-			for (@hashattribs)
-			{
-				if (!ref($_))
-				{
-					$attribstring .= $$record{$_}
-				}
-			}
-
-			my $newhash = Digest::MD5->new;
-			$newhash->add($attribstring);
-
-			if (!$oldhash)
-			{
-				$putstm->execute(${$record}{$self->{'readcriteria'}->{'index'}},$newhash->hexdigest);
-				push @hashcheckedrecords,$record;
-			}
- 			elsif($oldhash ne $newhash->hexdigest)
-			{
-				$updstm->execute($newhash->hexdigest,${$record}{$self->{'readcriteria'}->{'index'}});
-				push @hashcheckedrecords,$record;
-			}
-		}
-		@records = @hashcheckedrecords;
-	}
+	#if ($self->{'readcriteria'}->{'hashattributes'})
+	#{
+	#	my $checkedrecordset = $self->scanhashtable(\@records);
+	#	@records = @$checkedrecordset;
+	#	
+	#}
 
 	return \@records;
 	
+}
+
+#############################################################
+# ldapToAoH - convert the content of an LDAP handle to an AoH
+# takes - ldap handle
+# returns - AoH
+#############################################################
+sub ldapToAoH
+{
+	my $self = shift;
+	my $handle = shift;
+	
+	my @records;
+	my $counter=1;
+	
+		
+	if ($self->{'readcriteria'}->{'batchsize'} >0)
+	{
+		while ($counter<= $self->{'readcriteria'}->{'batchsize'})
+		{
+			my $entry=$handle->shift_entry;
+			if (!$entry){last}
+			my %record;
+			for my $attrib ($entry->attributes)
+			{
+				$record{$attrib} = $entry->get_value($attrib);
+			}
+			$self->{'log'}->($self->{'loghandle'},"Read ".$entry->dn." from the directory");
+			push @records,\%record;
+			$counter++;
+			$self->{'readprogress'}->($entry->dn);
+		}
+	}
+	else
+	{
+		while (my $entry=$handle->shift_entry)
+		{
+			my %record;
+			for my $attrib ($entry->attributes)
+			{
+				$record{$attrib} = $entry->get_value($attrib);
+			}
+			$self->{'log'}->($self->{'loghandle'},"Read ".$entry->dn." from the directory");
+			push @records,\%record;
+			$counter++;
+			$self->{'readprogress'}->($entry->dn);
+		}
+	}	
+	
+		
+		
+
+
+	return \@records;
+}
+
+#############################################################
+# dbiToAoH - converts a db handle to an AoH
+# takes - DB handle
+# returns - AoH
+#############################################################
+sub dbiToAoH
+{
+	my $self = shift;
+	my $handle = shift;
+
+	my @records;
+	my $counter=1;
+	my $recordcounter=0;	
+	# this separation looks a bit strange, but combining into a single loop resulted in a segfault from DBI that I chased 
+	# for HOURS! resolve at a later date.
+	if ($self->{'readcriteria'}->{'batchsize'} >0)
+	{
+		while ($counter <= $self->{'readcriteria'}->{'batchsize'}) 
+		{
+			my $entry = $handle->fetchrow_hashref; 
+			if (!$entry){last}
+			my %record;
+			for my $attrib (keys %$entry)
+			{
+				$record{$attrib} = $entry->{$attrib}
+			}
+			$self->{'log'}->($self->{'loghandle'},"Read entry ".++$recordcounter." from the database");
+			push @records,\%record;
+			$counter++;
+						
+			$self->{'readprogress'}->();
+		}
+	}
+	else
+	{
+		while (my $entry = $handle->fetchrow_hashref)
+		{
+			my %record;
+			for my $attrib (keys %$entry)
+			{
+				$record{$attrib} = $entry->{$attrib}
+			}
+			$self->{'log'}->($self->{'loghandle'},"Read entry ".++$recordcounter." from the database");
+			push @records,\%record;
+			$self->{'readprogress'}->();
+		}
+	}	
+
+	return \@records;
+}
+
+#############################################################
+# hashrecord - take a record as a hash, and return the MD5
+# hash
+#
+# takes hashref of record, arrayref of attribs to hash
+#
+#############################################################
+sub hashrecord
+{
+	require Digest::MD5;
+	my $self = shift;
+	my $record = shift;
+	my $attribs = shift;
+
+	# make a hash of the current record
+	my $attribstring;
+	for (@$attribs)
+	{
+		if (!ref($_))
+		{
+			$attribstring .= $$record{$_};
+		}
+	}
+
+	my $newhash = Digest::MD5->new;
+	$newhash->add($attribstring);
+
+	return $newhash->hexdigest;
+}
+	
+#############################################################
+# scanhashtable - run through a record set checking records
+#  against the stored hash table
+#  takes - a record set (AoH)
+#  returns - a record set minus unchanged records.
+#############################################################
+sub scanhashtable
+{
+	my $self = shift;
+	my $recordset = shift;
+	
+	require DBI;
+	require Digest::MD5;
+
+	my @records = @$recordset;
+	my @hashcheckedrecords;
+
+	my $hashdb = DBI->connect("DBI:SQLite:dbname=".$self->{'name'},"","") or die $!;
+
+	# check the hash table for this database exists - if not, create it
+	my $stm = $hashdb->prepare("select * from hashtable");
+		
+	if (!$stm)
+	{
+		$stm = $hashdb->prepare ("create table hashtable (targetkey CHAR(100),attribhash CHAR(32), status CHAR(1))");
+		$stm->execute;
+	}
+	else
+	{
+		# tombstone previously deleted entries
+		my $tmbstm = $hashdb->prepare("update hashtable set status=? where status=?");
+		my $result = $tmbstm->execute("T","D");
+		if (!$result || $result eq "0E0")
+		{
+			$self->{log}->($self->{loghandle},"Can't update status of previously deleted entries - expect write errors");
+		}
+		# mark all entries deleted, any that still exist will be marked update/exists
+		my $delstm = $hashdb->prepare("update hashtable set status=? where status != ?");
+		$result = $delstm->execute("D","T");
+		if (!$result || $result eq "0E0")
+		{
+			$self->{log}->($self->{loghandle},"Can't update status of all entries - deltas may fail");
+		}
+	}
+	
+	my $getstm = $hashdb->prepare ("select attribhash from hashtable where targetkey=?");
+	my $putstm = $hashdb->prepare("insert into hashtable (targetkey,attribhash) VALUES (?,?)");
+	my $updstm = $hashdb->prepare("update hashtable set attribhash=? where targetkey=?");
+	my $statusstm = $hashdb->prepare("update hashtable set status=? where targetkey=?");
+	
+	for my $record (@records)
+	{
+		$getstm->execute(${$record}{$self->{'writecriteria'}->{'index'}});
+		my $oldhash = $getstm->fetchrow;
+		
+		my $newhash = $self->hashrecord($record,\@{$self->{writecriteria}->{hashattributes}});
+		
+		if (!$oldhash)
+		{
+			$putstm->execute(${$record}{$self->{'writecriteria'}->{'index'}},$newhash);
+			push @hashcheckedrecords,$record;
+			$statusstm->execute("N",${$record}{$self->{writecriteria}->{index}});
+		}
+		elsif($oldhash ne $newhash)
+		{
+			$updstm->execute($newhash,${$record}{$self->{'writecriteria'}->{'index'}});
+			push @hashcheckedrecords,$record;
+			$statusstm->execute("U",${$record}{$self->{writecriteria}->{index}});
+		}
+		else
+		{
+			$statusstm->execute("E",${$record}{$self->{writecriteria}->{index}});
+		}
+	}
+	return \@hashcheckedrecords;
+}
+
+#############################################################
+# getdeletes - get a list of the deleted records
+# takes - null
+# returns - arrayref of deleted entries
+#############################################################
+sub getdeletes
+{
+	my $self = shift;
+	my $hashdb = DBI->connect("DBI:SQLite:dbname=".$self->{'name'},"","") or die $!;
+	
+	
+	my $stm = $hashdb->prepare("select targetkey from hashtable where status=?");
+	my $result = $stm->execute("D");
+	
+	
+	if (!$result)
+	{
+		return
+	}
+	else
+	{
+		#return $stm->fetchall_arrayref();
+		# fits into the existing code better to return a hash of index=>value
+		my @deleteds;
+		while (my $entry = $stm->fetchrow_array)
+		{
+			push @deleteds,{$self->{writecriteria}->{index} => $entry};
+		}
+		return \@deleteds;
+	}
+}
+
+#############################################################
+# deletes - define the behaviour for deleted records
+#
+# takes - hash of named params
+# returns - success/fail
+#############################################################
+sub deletes
+{
+	my $self = shift;
+	my $params;
+	if (!@_){return} # don't set anything if blank
+	if (scalar @_ == 1 && $_[0] =~/delete/i)
+	{
+		$params = "delete";
+	}
+	else
+	{
+		my %paramshash = @_;
+		$params = \%paramshash;
+	}
+	
+	$self->{deleteactions} = $params;
+	
+	return 1;
 }
 
 
@@ -555,7 +802,7 @@ sub run
 		$AoHdata = $self->remap($AoHdata);
 
 		# perform data transforms
-		$AoHdata = $self->runTransform($AoHdata);
+		$AoHdata = $self->runtransform($AoHdata);
 
 		if ($self->{validation})
 		{
@@ -568,6 +815,43 @@ sub run
 			
 		}
 
+		# check against hashtable
+		if ($self->{writecriteria}->{hashattributes})
+		{
+			$AoHdata = $self->scanhashtable($AoHdata);
+		}
+		
+		# handle deletions here - it MUST be after scanhashtable - note, it might be handy to put this in a separate function for ease of overloading.
+		if ($self->{deleteactions})
+		{
+			my $deletes = $self->getdeletes();
+			
+			if ($deletes)
+			{
+				if ($self->{deleteactions} eq "delete")
+				{
+					for my $record (@$deletes)
+					{
+						# It's very unlikely that 'Data::Sync::Action' will collide with a true field name
+						$record->{"Data::Sync::Action"} = "DELETE";
+					}
+				}
+				else # set up an update
+				{
+					#$deletes = $self->runtransform($deletes,$self->{deleteactions});
+					for my $entry (@$deletes)
+					{
+						%$entry = (%$entry,%{$self->{deleteactions}});
+					}
+				
+				}
+				# need to build attributes, remap and run transforms on deletes (for building DNs & field mappings)
+				#$deletes = $self->makebuiltattributes($deletes);
+				#$deletes = $self->remap($deletes);
+				#$deletes = $self->runtransform($deletes);
+				$AoHdata = \(@$AoHdata,@$deletes);
+			}
+		}
 
 		# write to target
 		$result = $self->{'write'}->($self,$AoHdata);
@@ -652,6 +936,22 @@ sub remap
 sub transforms
 {
 	my $self = shift;
+
+	$self->{transformations} = $self->maketrfunctions(@_);
+	
+	return 1;
+}
+
+##############################################################
+# maketrfunctions - convert the various transform functions
+#   into coderefs etc
+#
+# takes hash of params
+# returns hash of coderefs etc
+##############################################################
+sub maketrfunctions
+{	
+	my $self = shift;
 	
 	my %params=@_;
 
@@ -676,39 +976,40 @@ sub transforms
 		}
 	}
 		
-	$self->{'transformations'}=\%params;
-
-	return 1;
+	return \%params;
 
 	
 }
 
 ##############################################################
-# runTransform - perform regexes and data transforms on
+# runtransform - perform regexes and data transforms on
 # the data
 #
 # takes AoH
 # returns AoH
 #
 ##############################################################
-sub runTransform
+sub runtransform
 {
 
 	my $self = shift;
 	my $inData = shift;
+	my $transformations = shift;
+	if (!$transformations){$transformations = $self->{transformations}}
+		
 	my @outData;
-
+	
 	for my $line (@$inData)
 	{
 		my %record;
 		for my $attrib (keys %$line)
 		{
 			# only convert if there is a transform for this
-			if ($self->{'transformations'}->{$attrib})
+			if ($transformations->{$attrib})
 			{
 				my $before = $$line{$attrib};
 				# handle possible multi valued attribs
-				$record{$attrib} = $self->recursiveTransform($$line{$attrib},$self->{'transformations'}->{$attrib});
+				$record{$attrib} = $self->recursiveTransform($$line{$attrib},$transformations->{$attrib});
 			}
 			else
 			{
@@ -776,8 +1077,8 @@ sub recursiveTransform
 #
 # takes attribname=>'<template>' where %NAME% is the source
 # data
-# Note: this runs before runTransform, so data can be 
-# templated here, then transformed in runTransform for more
+# Note: this runs before runtransform, so data can be 
+# templated here, then transformed in runtransform for more
 # sophisticated constructions
 #
 # returns success\fail
@@ -822,14 +1123,14 @@ sub makebuiltattributes
 }	
 
 ######################################################
-# log - write logging information
+# writelog - write logging information
 #
 # takes $fh,$string
 #
 # returns undef
 #
 ######################################################
-sub log
+sub writelog
 {
 	my $fh = shift;
 	my $string = shift;
@@ -845,6 +1146,19 @@ sub log
 	return;
 }
 
+########################################################
+# log - log an entry
+# takes message
+# returns nothing
+########################################################
+sub log
+{
+	my $self = shift;
+	my $message = shift;
+	
+	$self->{log}->($self->{loghandle},$message);
+}
+
 
 
 ########################################################################
@@ -858,6 +1172,9 @@ sub save
 {
 	my $self = shift;
 	my $filename = shift;
+	
+	require Data::Dump::Streamer;
+	
 	if (!$filename)
 	{
 		$self->{'log'}->($self->{'loghandle'},"ERROR: No filename supplied to save");
@@ -900,6 +1217,8 @@ sub load
 	my $self = shift;
 	my $filename = shift;
 
+	require Data::Dump::Streamer;
+	
 	if (!$filename)
 	{
 		$self->{'log'}->($self->{'loghandle'},"ERROR: No filename supplied to save");
@@ -966,6 +1285,8 @@ sub lastruntime
 	my $self = shift;
 	return $self->{'lastruntime'};
 }
+
+
 
 #######################################################################
 # mvseparator - convenience function to change the multivalue
@@ -1043,7 +1364,7 @@ sub validate
 	for my $record (@$AoH)
 	{
 		
-		my $errorcounter;	
+		my $errorcounter = 0;	
 		for my $attrib (keys %$record)
 		{
 			# only try to validate the field if a validation pattern match is defined
@@ -1109,6 +1430,39 @@ sub recursivevalidate
 
 }
 
+
+######################################################################################
+# get - utility function to get a set of records
+######################################################################################
+sub get
+{
+	my $self = shift;
+
+	my $result = $self->{read}->($self);
+
+	if (!$result) { return undef }
+
+	my $recordset = $self->sourceToAoH($result);
+	
+	return $recordset;
+
+}
+
+#######################################################################################
+# put - utility function to write a set of records
+#######################################################################################
+sub put
+{
+	my $self = shift;
+	my $recordset = shift;
+	my $result = $self->{write}->($self,$recordset);
+	return $result;
+}
+
+
+
+
+
 ########################################################################
 ########################################################################
 # transformation functions
@@ -1168,7 +1522,6 @@ Data::Sync - A simple metadirectory/datapump module
  $sync->source($dbhandle,{
 				select=>"select * from testtable",
 				index=>"NAME",
-				hashattributes=>["ADDRESS","PHONE"]
 			});
 
  or
@@ -1209,7 +1562,11 @@ Data::Sync - A simple metadirectory/datapump module
 
  print $sync->commit();
 
+(For more complex uses, see Data::Sync::Advanced)
+
 =head1 DESCRIPTION
+
+NB: 0.07 is an interim release - the next version will contain significant changes, including changes to the UI.
 
 Data::Sync is a simple metadirectory/data pump module. It automates a number of the common tasks required when writing code to migrate/sync information from one datasource to another. 
 
@@ -1264,20 +1621,6 @@ Requires a valid, bound (i.e. logged in) Net::LDAP or DBI handle, and a hash of 
 DBI parameters are:
  select
 
-Other source options:
-
-By default, the source method will define the read operation as 'all in one'. If you want to handle data in batches, specify
-
- batchsize=>x
-
-in the hash of read criteria. This will read a batch from the handle, perform the operation, read the next batch from the handle, and so on. Note that this will still be working against an entire record set matching your criteria, so the memory advantages are limited. 
-
-Attribute hashing can be specified with the keys:
-
- index=>"index/key attribute"
- hashattributes=>["attrib","attrib","attrib"]
-
-When running, this will create an MD5 hash of the concatentation of the specified attributes, and store it in a database under the specified index. Next time the job is run, it will hash the value again, and compare it with the last hashed value. If they are the same, the record will not be written to the target. These entries are stored in a SQLite database - if you want to manipulate the database directly, you can do so with a sqlite3 client. The SQLite database takes it's name from the 'jobname' attribute specified in $sync->new. If you didn't specify a jobname, it will default to 'noname' - so if you are running multiple jobs with attribute hashing in the same directory on your disk, it's important to make sure they have names.
  
 =head2 target
 
@@ -1291,7 +1634,20 @@ When running, this will create an MD5 hash of the concatentation of the specifie
  or
 
  $sync->target($db); # only if loading config from a file
+ 
+ or
+ 
+ $sync->target($dbhandle,{table=>'targettable',
+				index=>'NAME'
+  				hashattributes=>["ADDRESS","PHONE"]
+					});
+					
+ or
+ 
+ $sync->target($ldaphandle,{hashattributes=>["ADDRESS","PHONE"]}
+				);
 
+ 
 Requires a valid, bound (i.e. logged in) DBI or Net::LDAP handle, and a hash of parameters (unless you are loading the config from a file). No parameters are required for LDAP data targets, but a dn must have been either read from the data source or constructed using buildattributes. Valid DBI parameters are
 
  table - the table you wish to write to on the data target
@@ -1300,6 +1656,14 @@ Requires a valid, bound (i.e. logged in) DBI or Net::LDAP handle, and a hash of 
 There is no 'pre check' on datatypes or lengths, so if you attempt to write a record with an oversized or mismatched data type, it will fail with an error. 
 
 Note: if you are writing from DB to LDAP, you must construct all mandatory attributes using buildattributes, or additions will fail.
+
+Attribute hashing can be specified with the keys:
+
+ index=>"index/key attribute"
+ hashattributes=>["attrib","attrib","attrib"]
+
+When running, this will create an MD5 hash of the concatentation of the specified attributes, and store it in a database under the specified index. Next time the job is run, it will hash the value again, and compare it with the last hashed value. If they are the same, the record will not be written to the target. These entries are stored in a SQLite database - if you want to manipulate the database directly, you can do so with a sqlite3 client. The SQLite database takes it's name from the 'jobname' attribute specified in $sync->new. If you didn't specify a jobname, it will default to 'noname' - so if you are running multiple jobs with attribute hashing in the same directory on your disk, it's important to make sure they have names.
+
 
 =head2 mappings
 
@@ -1345,6 +1709,18 @@ Note: If passing a regex in a string, make sure you use single quotes. Double qu
 
 Validation defines pattern matches for attributes. The validation methods are the last to be called before writing. If any of the specified fields fail to match the specified pattern match, the whole validation will fail and the write will not happen. Validation is optional, you don't have to specify a validation set, but it's useful to ensure that the constructed record set is what you were expecting before you write it out. Validation is also recursive, so it will handle multi valued attributes and subtrees in LDAP.
 
+=head2 deletes
+
+ $sync->deletes("delete");
+
+ or
+ 
+ $sync->delete(attrib=>value,attrib=>value);
+ 
+Define the action to be taken against entries that have been deleted. Note that this only works if hashing is defined in 'target'. The parameters can be "delete", in which case the entry is deleted, or attrib=>value pairs, in which case the specified attributes are changed to the string in 'value'. Note that it is impossible to do a 'transform' on the attribute value, as the data is no longer present once a delete has been detected.
+
+
+
 =head2 save
 
  $sync->save("filename");
@@ -1389,9 +1765,13 @@ Sets or returns the multi valued attribute separator. (defaults to |)
 
 Calls the write handle commit method, where the write handle is DBI (there's no rollback/commit available in LDAP). This is provided as a convenience, just in case you have autocommit turned off on your db handle.
 
+=head1 SEE ALSO
+
+More detail on extra methods, accessing the internal methods of Data::Sync from your code, and subclassing are detailed in Data::Sync::Advanced
+
 =head1 PREREQS
 
-Data::Dump::Streamer
+If you want to save and load definition files, you'll need Data::Dump::Streamer
 
 If you are using DBI datasources, you will need DBI & the appropriate DBI drivers.
 
@@ -1401,7 +1781,7 @@ If you are using attribute hashing, you will also need DBI & DBD::SQLite
 
 =head1 VERSION
 
-0.06
+0.07
 
 =head1 BUGS & CAVEATS
 
@@ -1409,17 +1789,23 @@ Data::Sync handles column/attribute names as case sensitive. Postgresql (at leas
 
 =head1 TODO
 
+Hashing individual attributes so if one attribute changes, only that attribute is written.
+
+UI changes: instead of passing a handle, pass a type=>LDAP/DBI/Psql etc, and the connect parameters. Restructure in subclasses so that DBI is a generic sql, but can be subclassed by specific classes for particular datasources. This is a major change to the UI. write a handle factory to create the db/ldap handle. The AoH for records, and methods for read and write are required. This sits well with the dispatcher class. Retain handle passing UI facility if possible, but deprecate.
+
+Implementing Data::Sync::Datasource as a dispatcher class redirecting to ::dbi & ::ldap would fit the UML model better, might make subclassing easier, and would probably be easier to maintain. For other divisions see Classes.dia
+
+Validation can  be extended for deletes by putting a % comparison of recordset vs delete set in 'run'
+
+Multiple sources in a single job? Possibly by naming, and with a default name to support existing syntax.
+
+Separate out the table creation methods into a subclass(?) and use a dispatcher? (table creation WIP)
+
 Friendly CSV/TD source/target methods
 
 Modular datasource/targets for including non dbi/ldap datasources?
 		
 Example using AnyData & XML
-
-Deletion support (somehow, anyhow....)
-
-Delta support/timestamp detection/changelog & persistent search
-
-Multiple sources in a single job?
 
 Multiple targets in a single job?
 
@@ -1429,9 +1815,27 @@ UTF8/ANSI handling.
 
 Perltidy the tests (thanks for spotting the mess Gavin)
 
-Use SQL::Abstract instead of constructing statements?
-
 =head1 CHANGES
+
+v0.07
+
+Added in 'add if no index' facility on writedbi
+
+Generalised delta code
+
+Removed 'use DDS' and replaced with 'require' in save and load methods, so dependency is only if using those functions
+
+Implemented ::deletes
+
+Generalised sourceToAoH & write methods
+
+Separated complex uses into Data::Sync::Advanced POD
+
+Implemented get & put methods
+
+Implemented hashrecord method
+
+extended testing
 
 v0.06
 

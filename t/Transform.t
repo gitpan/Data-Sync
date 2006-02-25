@@ -60,7 +60,7 @@ $synchandle->transforms(
     
 );
 
-my $result = $synchandle->runTransform( \@AoH );
+my $result = $synchandle->runtransform( \@AoH );
 
 # check names
 my $namesok = 1;

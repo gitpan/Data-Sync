@@ -65,7 +65,7 @@ $synchandle->validation(	address=>"/St\./",
 
 
 
-my $result = $synchandle->runTransform( \@AoH );
+my $result = $synchandle->runtransform( \@AoH );
 
 # make sure the transform actually happened
 ok($result);
@@ -81,7 +81,6 @@ push @AoH,{	name=>"testfail",
 		address=>"no address"	};
 
 $validation = $synchandle->validate(\@AoH);
-print $validation,"\n";
 
 ok(!$validation);
 

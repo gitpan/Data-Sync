@@ -31,7 +31,7 @@ $synchandle->transforms(name=>"stripspaces",
 					return $var},
 			phone=>'s/^0(\d{4})/\+44 $1/');
 
-my $result = $synchandle->runTransform(\@AoH);
+my $result = $synchandle->runtransform(\@AoH);
 
 close $fh;
 
