@@ -24,6 +24,8 @@
 #
 # 0.07	CColbourn		Enhancements - see POD CHANGES
 #
+# 0.08	CColbourn		Enhancements - see POD CHANGES
+#
 #####################################################################
 # Notes
 # =====
@@ -35,7 +37,7 @@ use warnings;
 
 
 package Data::Sync;
-our $VERSION="0.07";
+our $VERSION="0.08";
 
 #####################################################################
 # New - constructor of datasync object
@@ -1816,6 +1818,10 @@ UTF8/ANSI handling.
 Perltidy the tests (thanks for spotting the mess Gavin)
 
 =head1 CHANGES
+
+v0.08
+
+Bugfix, added package statement to Advanced.pm to ensure correct CPAN indexing
 
 v0.07
 
